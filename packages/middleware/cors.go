@@ -18,6 +18,9 @@ type CORSConfig struct {
 	AllowHeaders []string
 	// AllowCredentials emits Access-Control-Allow-Credentials.
 	AllowCredentials bool
+	// ExposeHeaders lists response headers browsers may read
+	// (Access-Control-Expose-Headers), e.g. X-Request-ID, X-Total-Count.
+	ExposeHeaders []string
 	// MaxAge caches preflight results for this many seconds.
 	MaxAge int
 }
@@ -62,6 +65,9 @@ func CORS(cfg CORSConfig) router.Middleware {
 				}
 				if cfg.AllowCredentials {
 					h.Set("Access-Control-Allow-Credentials", "true")
+				}
+				if len(cfg.ExposeHeaders) > 0 {
+					h.Set("Access-Control-Expose-Headers", strings.Join(cfg.ExposeHeaders, ", "))
 				}
 			}
 
