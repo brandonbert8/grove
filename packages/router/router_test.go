@@ -32,8 +32,8 @@ func TestMethodRegistration(t *testing.T) {
 			t.Fatalf("%s %s = %d, want 200", tc.method, tc.path, rec.Code)
 		}
 	}
-	if len(r.Routes()) != 5 {
-		t.Fatalf("want 5 routes, got %d", len(r.Routes()))
+	if len(r.Routes()) != 6 {
+		t.Fatalf("want 6 routes (5 explicit + auto HEAD on GET), got %d", len(r.Routes()))
 	}
 }
 

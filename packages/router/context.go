@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+
+	chi "github.com/go-chi/chi/v5"
 )
 
 // errNilBodyTarget and errEmptyBody describe Body misuse.
@@ -40,7 +42,8 @@ type Context interface {
 	// (see packages/pipes), not here.
 	Body(v any) error
 
-	// Status writes the status code header.
+	// Status stashes the status code; the next JSON/String/NoContent
+	// call writes it (a single WriteHeader per response).
 	Status(code int) Context
 	// JSON writes v as application/json with the given status code.
 	JSON(code int, v any) error
@@ -54,6 +57,10 @@ type Context interface {
 type httpContext struct {
 	w http.ResponseWriter
 	r *http.Request
+	// status stashes Status() until a body writer flushes it, so
+	// Status(201).JSON(201, v) emits exactly one WriteHeader.
+	status    int
+	statusSet bool
 }
 
 // NewContext wraps w and r in a Context.
@@ -68,7 +75,16 @@ func (c *httpContext) Request() *http.Request { return c.r }
 func (c *httpContext) ResponseWriter() http.ResponseWriter { return c.w }
 
 // Param returns the path parameter named name.
-func (c *httpContext) Param(name string) string { return c.r.PathValue(name) }
+//
+// Parameters are matched by Chi (e.g. "/users/{id}"). The lookup falls
+// back to net/http's PathValue so contexts built outside the mux (unit
+// tests with httptest) keep working.
+func (c *httpContext) Param(name string) string {
+	if v := chi.URLParam(c.r, name); v != "" {
+		return v
+	}
+	return c.r.PathValue(name)
+}
 
 // Query returns the first value of query parameter name.
 func (c *httpContext) Query(name string) string { return c.r.URL.Query().Get(name) }
@@ -102,14 +118,27 @@ func (c *httpContext) Body(v any) error {
 	return nil
 }
 
-// Status writes the status code header.
+// Status stashes the status code header; the next JSON/String/NoContent
+// call flushes it (its own code wins when Status was not called).
+// Nothing is written until a body writer runs, so chained calls emit a
+// single WriteHeader.
 func (c *httpContext) Status(code int) Context {
-	c.w.WriteHeader(code)
+	c.status, c.statusSet = code, true
 	return c
+}
+
+// resolveStatus returns the stashed status when set, else fallback.
+func (c *httpContext) resolveStatus(fallback int) int {
+	if c.statusSet {
+		return c.status
+	}
+	return fallback
 }
 
 // JSON writes v as application/json with the given status code.
 func (c *httpContext) JSON(code int, v any) error {
+	code = c.resolveStatus(code)
+	c.statusSet = false
 	c.w.Header().Set("Content-Type", "application/json")
 	c.w.WriteHeader(code)
 	return json.NewEncoder(c.w).Encode(v)
@@ -117,6 +146,8 @@ func (c *httpContext) JSON(code int, v any) error {
 
 // String writes s as text/plain with the given status code.
 func (c *httpContext) String(code int, s string) error {
+	code = c.resolveStatus(code)
+	c.statusSet = false
 	c.w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	c.w.WriteHeader(code)
 	_, err := c.w.Write([]byte(s))
@@ -125,6 +156,8 @@ func (c *httpContext) String(code int, s string) error {
 
 // NoContent writes a status code with an empty body.
 func (c *httpContext) NoContent(code int) error {
+	code = c.resolveStatus(code)
+	c.statusSet = false
 	c.w.WriteHeader(code)
 	return nil
 }

@@ -19,11 +19,12 @@ type RouteInfo struct {
 
 // Router is Grove's HTTP routing abstraction.
 //
-// Implementations must support the four core verbs, global middleware,
-// route groups, and http.Handler so the router can be mounted in any
-// net/http server. Keep implementations small; advanced routing
-// (parameter constraints, host routing) belongs in a replacement router,
-// not in this interface.
+// The default implementation is Chi-backed (see New): Chi owns
+// matching, path parameters ({id}), groups, and 404/405 dispatch,
+// while Grove owns handlers, middleware, and error representation.
+// Arbitrary methods (HEAD, OPTIONS, ...) go through Handle; std
+// middleware integrates via FromHTTP. Keep implementations small;
+// advanced transports belong in a replacement router, not here.
 type Router interface {
 	http.Handler
 
