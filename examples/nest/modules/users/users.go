@@ -128,11 +128,17 @@ var UsersModule = &grove.ModuleDef{
 		h := &Handler{svc: svc}
 		return []grove.ControllerDef{{
 			Prefix:     "/users",
+			Tags:       []string{"users"},
+			Security:   []string{"bearerAuth"},
 			Middleware: []router.Middleware{guard},
 			Endpoints: []grove.Endpoint{
-				grove.GET("", h.list),
-				grove.GET("/{id}", h.get),
-				grove.POST("", h.create, fauth.RequireRole("admin")),
+				{Method: "GET", Path: "", Handler: h.list, Summary: "List users",
+					Responses: map[int]string{200: "users + viewer"}},
+				{Method: "GET", Path: "/{id}", Handler: h.get, Summary: "Get user",
+					Responses: map[int]string{200: "user", 404: "unknown id"}},
+				{Method: "POST", Path: "", Handler: h.create, Middleware: []router.Middleware{fauth.RequireRole("admin")},
+					Summary:   "Create user (admin)",
+					Responses: map[int]string{201: "created user", 401: "missing token", 403: "non-admin", 422: "invalid DTO"}},
 			},
 		}}, nil
 	},

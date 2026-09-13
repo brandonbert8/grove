@@ -47,7 +47,8 @@ var HelloModule = grove.NewModule("hello", func(app *grove.App) error {
 		return err
 	}
 	h := NewGreetingHandler(svc)
-	app.Router.GET("/hello", h.Greet)
+	// App.Route (not raw Router) keeps the route visible to App.Docs.
+	app.Route("GET", "/hello", h.Greet)
 	return nil
 })
 
@@ -55,10 +56,13 @@ func main() {
 	app := grove.New()
 	app.Router.Use(
 		middleware.Recovery(app.Logger),
+		middleware.RequestID(),
 		middleware.Logging(app.Logger),
-		middleware.CORS(middleware.DefaultCORSConfig()),
 	)
-	app.MustRegister(HelloModule)
+	app.MustRegister(
+		HelloModule,
+		grove.HealthModule("").AsModule(),
+	)
 	if err := app.Run(""); err != nil {
 		panic(err)
 	}

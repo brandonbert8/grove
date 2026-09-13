@@ -35,7 +35,7 @@ func (r *Runner) generate(kind, name string, out func(string)) error {
 		}); err != nil {
 			return err
 		}
-		out(fmt.Sprintf("created controller in %s (wire it into module %s)", relPath(target), name))
+		out(wireControllerReport(target, name))
 	case "service":
 		ensureDir(target)
 		if err := writeFiles(target, map[string]string{
@@ -43,11 +43,56 @@ func (r *Runner) generate(kind, name string, out func(string)) error {
 		}); err != nil {
 			return err
 		}
-		out(fmt.Sprintf("created service in %s", relPath(target)))
+		out(wireServiceReport(target, name))
 	default:
 		return fmt.Errorf("unknown generate kind %q: want module|controller|service", kind)
 	}
 	return nil
+}
+
+// providersAnchor marks the Providers entry point in generated module.go.
+// `grove generate service` inserts above it; its presence proves the
+// file is in generated shape and safe to patch.
+const providersAnchor = "\t\t// grove:providers\n"
+
+// wireServiceReport patches module.go Providers when possible and
+// reports the wiring state explicitly — never silently.
+func wireServiceReport(target, name string) string {
+	rel := relPath(target)
+	ctor := "New" + title(name) + "Service"
+	p := filepath.Join(target, "module.go")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return fmt.Sprintf("created service in %s (no module.go: run `grove generate module %s` first, then add %s to Providers)", rel, name, ctor)
+	}
+	src := string(data)
+	if strings.Contains(src, ctor) {
+		return fmt.Sprintf("created service in %s (already wired in module.go providers)", rel)
+	}
+	if strings.Count(src, providersAnchor) != 1 {
+		return fmt.Sprintf("created service in %s (module.go is not in generated shape: add grove.Provide0(di.Singleton, %s) to Providers manually)", rel, ctor)
+	}
+	line := "\t\tgrove.Provide0(di.Singleton, " + ctor + "),\n"
+	patched := strings.Replace(src, providersAnchor, line+providersAnchor, 1)
+	if err := os.WriteFile(p, []byte(patched), 0o644); err != nil {
+		return fmt.Sprintf("created service in %s (patch failed: %v — add %s to Providers manually)", rel, err, ctor)
+	}
+	return fmt.Sprintf("created service in %s (wired into module.go providers)", rel)
+}
+
+// wireControllerReport verifies the generated handler is picked up by
+// module.go BuildControllers and reports the wiring state explicitly.
+func wireControllerReport(target, name string) string {
+	rel := relPath(target)
+	ctor := "New" + title(name) + "Handler"
+	data, err := os.ReadFile(filepath.Join(target, "module.go"))
+	if err != nil {
+		return fmt.Sprintf("created controller in %s (no module.go: run `grove generate module %s` first, then wire %s)", rel, name, ctor)
+	}
+	if strings.Contains(string(data), ctor) {
+		return fmt.Sprintf("created controller in %s (picked up by module.go BuildControllers)", rel)
+	}
+	return fmt.Sprintf("created controller in %s (module.go does not reference %s: wire it into BuildControllers)", rel, ctor)
 }
 
 // moduleFiles returns the full file set for a new module.
@@ -143,6 +188,7 @@ var Module = &grove.ModuleDef{
 	Name: "%[1]s",
 	Providers: []grove.Provider{
 		grove.Provide0(di.Singleton, New%[2]sService),
+		// grove:providers
 	},
 	BuildControllers: func(app *grove.App) ([]grove.ControllerDef, error) {
 		svc, err := di.ResolveAs[*%[2]sService](app.Container)

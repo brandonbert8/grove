@@ -10,7 +10,7 @@ import (
 )
 
 // Version is the grove CLI version. Bumped per release.
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // Runner executes CLI commands. Out receives help and status output;
 // Dir is the working directory scaffolding is created in (empty means
@@ -37,10 +37,11 @@ func (r *Runner) Run(args []string) int {
 	switch args[0] {
 	case "new":
 		if len(args) < 2 || strings.TrimSpace(args[1]) == "" {
-			fmt.Fprintln(out, "usage: grove new <project>")
+			fmt.Fprintln(out, "usage: grove new <project> [--force]")
 			return 2
 		}
-		if err := r.scaffold(args[1]); err != nil {
+		force := len(args) > 2 && (args[2] == "--force" || args[2] == "-f")
+		if err := r.scaffold(args[1], force); err != nil {
 			fmt.Fprintln(out, "error:", err)
 			return 1
 		}
@@ -73,24 +74,54 @@ func printHelp(w io.Writer) {
 	fmt.Fprintln(w, "grove - the Grove backend framework CLI")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "commands:")
-	fmt.Fprintln(w, "  grove new <project>                     scaffold a new project")
+	fmt.Fprintln(w, "  grove new <project> [--force]          scaffold a new project")
+	fmt.Fprintln(w, "                                           (plain name, module path, or absolute dir)")
 	fmt.Fprintln(w, "  grove generate module <name>            scaffold modules/<name> (module+service+controller)")
 	fmt.Fprintln(w, "  grove generate controller <name>        add a controller to modules/<name>")
 	fmt.Fprintln(w, "  grove generate service <name>           add a service to modules/<name>")
 	fmt.Fprintln(w, "  grove version                           print the CLI version")
 }
 
-// scaffold creates a minimal Grove project at name.
-func (r *Runner) scaffold(name string) error {
+// scaffold creates a minimal Grove project.
+//
+// name accepts three shapes (like `go` tooling):
+//   - plain "myapp" → dir ./myapp (or Dir/myapp), module "myapp";
+//   - module path "github.com/foo/bar" → dir ./bar, module "github.com/foo/bar";
+//   - absolute "/tmp/myapp" → dir as given, module "myapp".
+//
+// Without force, an existing directory aborts; --force replaces it.
+func (r *Runner) scaffold(name string, force bool) error {
 	if strings.TrimSpace(name) == "" {
 		return errors.New("project name must not be empty")
 	}
-	base := name
-	if r.Dir != "" {
-		base = filepath.Join(r.Dir, name)
+	parent := r.Dir
+	if parent == "" {
+		var err error
+		parent, err = os.Getwd()
+		if err != nil {
+			return err
+		}
+	}
+	var base, modPath string
+	switch {
+	case filepath.IsAbs(name):
+		base, modPath = name, filepath.Base(name)
+	case strings.Contains(name, "/"):
+		modPath = strings.TrimSuffix(name, "/")
+		base = filepath.Join(parent, filepath.Base(modPath))
+	default:
+		base, modPath = filepath.Join(parent, name), name
+	}
+	if modPath == "" || modPath == "." || modPath == "/" {
+		return fmt.Errorf("invalid project name %q", name)
 	}
 	if _, err := os.Stat(base); err == nil {
-		return fmt.Errorf("directory %s already exists", base)
+		if !force {
+			return fmt.Errorf("directory %s already exists (use --force to replace)", base)
+		}
+		if err := os.RemoveAll(base); err != nil {
+			return err
+		}
 	}
 	dirs := []string{
 		base,
@@ -103,9 +134,10 @@ func (r *Runner) scaffold(name string) error {
 	}
 	modName := filepath.Base(base)
 	files := map[string]string{
-		"go.mod":                   scaffoldGoMod(modName),
-		"main.go":                  scaffoldMain(),
+		"go.mod":                   scaffoldGoMod(modPath),
+		"main.go":                  scaffoldMain(modPath),
 		".env.example":             "PORT=3000\nLOG_LEVEL=info\n",
+		".gitignore":               ".env\n",
 		"modules/hello/module.go":  scaffoldHelloModule(),
 		"modules/hello/service.go": scaffoldHelloService(),
 		"modules/hello/handler.go": scaffoldHelloHandler(),

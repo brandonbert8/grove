@@ -26,6 +26,9 @@ type Config struct {
 	DatabaseURL string
 	// LogLevel controls the logger verbosity: debug, info, warn, error.
 	LogLevel string
+	// JWTSecret signs auth tokens. Empty is legal here (auth refuses to
+	// boot without one); use WithRequired("JWT_SECRET") to fail fast.
+	JWTSecret string
 }
 
 // defaults returns the baseline configuration.
@@ -44,8 +47,10 @@ func defaults() Config {
 type Option func(*options)
 
 type options struct {
-	envPath string
-	over    map[string]string
+	envPath  string
+	over     map[string]string
+	required []string
+	strict   bool
 }
 
 // WithEnvFile points the loader at a specific .env file.
@@ -58,6 +63,28 @@ func WithEnvFile(path string) Option {
 // process environment. Keys are upper-case env names ("PORT").
 func WithOverrides(kv map[string]string) Option {
 	return func(o *options) { o.over = kv }
+}
+
+// WithRequired fails Load when any named env var is blank or absent.
+// Names are exact (e.g. "JWT_SECRET", "DATABASE_URL") and see the
+// merged view: .env, process environment, and WithOverrides — in that
+// precedence. Fail-fast for secrets that must never default.
+func WithRequired(names ...string) Option {
+	return func(o *options) { o.required = append(o.required, names...) }
+}
+
+// WithStrict fails Load on unknown GROVE_*-namespaced variables,
+// catching typos like GROVE_PROT. Unnamespaced process variables
+// (PATH, HOME, ...) are never inspected.
+func WithStrict() Option {
+	return func(o *options) { o.strict = true }
+}
+
+// knownGroveNames is the GROVE_* vocabulary Load understands.
+var knownGroveNames = map[string]bool{
+	"GROVE_APP_NAME": true, "GROVE_ENV": true, "GROVE_HOST": true,
+	"GROVE_PORT": true, "GROVE_DATABASE_URL": true,
+	"GROVE_LOG_LEVEL": true, "GROVE_JWT_SECRET": true,
 }
 
 // Load reads .env (if present) plus environment variables into a Config.
@@ -112,6 +139,22 @@ func Load(opts ...Option) (*Config, error) {
 	if v, ok := lookup(merged, "LOG_LEVEL", "GROVE_LOG_LEVEL"); ok {
 		cfg.LogLevel = strings.ToLower(v)
 	}
+	if v, ok := lookup(merged, "JWT_SECRET", "GROVE_JWT_SECRET"); ok {
+		cfg.JWTSecret = v
+	}
+
+	for _, name := range o.required {
+		if strings.TrimSpace(merged[name]) == "" {
+			return nil, fmt.Errorf("config: required variable %q is not set", name)
+		}
+	}
+	if o.strict {
+		for k := range merged {
+			if strings.HasPrefix(k, "GROVE_") && !knownGroveNames[k] {
+				return nil, fmt.Errorf("config: unknown variable %q (strict mode)", k)
+			}
+		}
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -148,6 +191,18 @@ func (c Config) Addr() string {
 	}
 	return c.Host + ":" + strconv.Itoa(c.Port)
 }
+
+// IsProduction reports Env == "production".
+func (c Config) IsProduction() bool { return c.Env == "production" }
+
+// IsProd is shorthand for IsProduction.
+func (c Config) IsProd() bool { return c.IsProduction() }
+
+// IsDevelopment reports Env == "development" (the default).
+func (c Config) IsDevelopment() bool { return c.Env == "development" }
+
+// IsTest reports Env == "test".
+func (c Config) IsTest() bool { return c.Env == "test" }
 
 // lookup returns the first non-empty value for any of the names.
 func lookup(vars map[string]string, names ...string) (string, bool) {
