@@ -2,9 +2,11 @@ package pipes
 
 import (
 	"fmt"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // FieldError describes one validation failure.
@@ -31,13 +33,30 @@ func (e FieldError) Error() string { return e.Message }
 //	gte=n     >= n (number)
 //	lte=n     <= n (number)
 //	email     simple email shape (string)
+//	uuid      canonical 8-4-4-4-12 hex (string)
+//	url       absolute http(s) URL (string)
 //	oneof=a b space-separated allowed values (string)
 //
+// Custom rules (the class-validator custom-decorator equivalent) plug in
+// via RegisterRule and run in place of — or overriding — builtins.
 // Rules apply per field kind where sensible; unknown rules are ignored so
 // custom tags can coexist. Unexported fields are skipped. Nested structs,
 // pointers, and slices of structs are validated recursively with dotted
 // paths.
 func Validate(v any) []FieldError {
+	return validateValue(v, false)
+}
+
+// ValidateStrict behaves like Validate but fails closed: unknown rules
+// and malformed rule parameters (e.g. a typo'd `gte=abc`) report errors
+// instead of passing silently. Use it when DTO tags are load-bearing
+// contracts; keep Validate for forward-compatible interop tags.
+func ValidateStrict(v any) []FieldError {
+	return validateValue(v, true)
+}
+
+// validateValue dereferences v and validates structs.
+func validateValue(v any, strict bool) []FieldError {
 	if v == nil {
 		return []FieldError{{Field: "", Tag: "required", Message: "value is required"}}
 	}
@@ -51,10 +70,32 @@ func Validate(v any) []FieldError {
 	if rv.Kind() != reflect.Struct {
 		return nil
 	}
-	return validateStruct(rv, "")
+	return validateStruct(rv, "", strict)
 }
 
-func validateStruct(rv reflect.Value, prefix string) []FieldError {
+// RuleFunc validates one field for a custom rule (see RegisterRule).
+// field is the dotted path, value the field's reflect value, param the
+// "=..." suffix ("" when absent). Return "" on success, otherwise the
+// complete failure message (it is NOT wrapped with the field name).
+type RuleFunc func(field string, value reflect.Value, param string) string
+
+// customRules holds user-registered validation rules by name.
+var customRules sync.Map // map[string]RuleFunc
+
+// RegisterRule adds (or overrides) a `validate` tag rule, the equivalent
+// of a class-validator custom decorator. It panics on empty name or nil
+// fn: call it from init or module wiring, never per request.
+func RegisterRule(name string, fn RuleFunc) {
+	if strings.TrimSpace(name) == "" {
+		panic("pipes: rule name must not be empty")
+	}
+	if fn == nil {
+		panic("pipes: rule func must not be nil")
+	}
+	customRules.Store(name, fn)
+}
+
+func validateStruct(rv reflect.Value, prefix string, strict bool) []FieldError {
 	var out []FieldError
 	rt := rv.Type()
 	for i := 0; i < rt.NumField(); i++ {
@@ -86,7 +127,7 @@ func validateStruct(rv reflect.Value, prefix string) []FieldError {
 		}
 		if deref.IsValid() && deref.Kind() == reflect.Struct && !isTimeLike(deref) {
 			if tag == "" || !hasRule(tag, "required") || !isNilOrZeroPointer(fv) {
-				out = append(out, validateStruct(deref, path)...)
+				out = append(out, validateStruct(deref, path, strict)...)
 			}
 		}
 		// Recurse into slices of structs for element validation.
@@ -100,7 +141,7 @@ func validateStruct(rv reflect.Value, prefix string) []FieldError {
 					ev = ev.Elem()
 				}
 				if ev.IsValid() && ev.Kind() == reflect.Struct && !isTimeLike(ev) {
-					out = append(out, validateStruct(ev, fmt.Sprintf("%s[%d]", path, j))...)
+					out = append(out, validateStruct(ev, fmt.Sprintf("%s[%d]", path, j), strict)...)
 				}
 			}
 		}
@@ -114,7 +155,7 @@ func validateStruct(rv reflect.Value, prefix string) []FieldError {
 				continue
 			}
 			name, param, _ := strings.Cut(rule, "=")
-			if msg := checkRule(path, fv, name, param); msg != "" {
+			if msg := checkRule(path, fv, name, param, strict); msg != "" {
 				out = append(out, FieldError{Field: path, Tag: name, Param: param, Message: msg})
 			}
 		}
@@ -151,8 +192,16 @@ func isTimeLike(v reflect.Value) bool {
 	return t.PkgPath() == "time" && t.Name() == "Time"
 }
 
-// checkRule applies one rule, returning "" on success.
-func checkRule(field string, v reflect.Value, rule, param string) string {
+// checkRule applies one rule, returning "" on success. In strict mode,
+// malformed parameters and unknown rules fail instead of passing.
+func checkRule(field string, v reflect.Value, rule, param string, strict bool) string {
+	// Custom rules win over builtins so teams can tighten (or replace)
+	// framework defaults without forking the engine.
+	if fn, ok := customRules.Load(rule); ok {
+		if rfn, ok := fn.(RuleFunc); ok {
+			return rfn(field, v, param)
+		}
+	}
 	fail := func(format string, args ...any) string {
 		return fmt.Sprintf("field %q %s", field, fmt.Sprintf(format, args...))
 	}
@@ -164,6 +213,9 @@ func checkRule(field string, v reflect.Value, rule, param string) string {
 	case "min", "max", "len":
 		n, err := strconv.Atoi(param)
 		if err != nil {
+			if strict {
+				return fail("has invalid rule parameter %q", param)
+			}
 			return "" // malformed param: ignore, never fail closed on config
 		}
 		size, ok := fieldSize(v)
@@ -187,6 +239,9 @@ func checkRule(field string, v reflect.Value, rule, param string) string {
 	case "gte", "lte":
 		n, err := strconv.ParseFloat(param, 64)
 		if err != nil {
+			if strict {
+				return fail("has invalid rule parameter %q", param)
+			}
 			return ""
 		}
 		f, ok := fieldNumber(v)
@@ -206,6 +261,20 @@ func checkRule(field string, v reflect.Value, rule, param string) string {
 		if !emailOK(v.String()) {
 			return fail("must be a valid email")
 		}
+	case "uuid":
+		if v.Kind() != reflect.String {
+			return ""
+		}
+		if !uuidOK(v.String()) {
+			return fail("must be a valid UUID")
+		}
+	case "url":
+		if v.Kind() != reflect.String {
+			return ""
+		}
+		if !urlOK(v.String()) {
+			return fail("must be a valid absolute http(s) URL")
+		}
 	case "oneof":
 		if v.Kind() != reflect.String {
 			return ""
@@ -217,6 +286,9 @@ func checkRule(field string, v reflect.Value, rule, param string) string {
 		}
 		return fail("must be one of [%s]", strings.Join(strings.Fields(param), ", "))
 	default:
+		if strict {
+			return fail("uses unknown validation rule %q", rule)
+		}
 		// Unknown rule: ignore for forward compatibility.
 	}
 	return ""
@@ -293,4 +365,44 @@ func emailOK(s string) bool {
 	}
 	dot := strings.LastIndex(domain, ".")
 	return dot > 0 && dot < len(domain)-1
+}
+
+// uuidOK accepts canonical 8-4-4-4-12 hex, any version, either case.
+func uuidOK(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < 36; i++ {
+		switch i {
+		case 8, 13, 18, 23:
+			if s[i] != '-' {
+				return false
+			}
+		default:
+			if !isHex(s[i]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// isHex reports ASCII hex digits.
+func isHex(b byte) bool {
+	return b >= '0' && b <= '9' || b >= 'a' && b <= 'f' || b >= 'A' && b <= 'F'
+}
+
+// urlOK requires an absolute http(s) URL with a host.
+func urlOK(s string) bool {
+	if s == "" {
+		return false
+	}
+	u, err := url.ParseRequestURI(s)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	return u.Host != ""
 }
