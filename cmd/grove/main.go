@@ -1,4 +1,6 @@
 // Command grove is the Grove framework CLI: scaffolding and generation.
+//
+// Exit codes: 0 success, 2 usage error, 1 runtime failure.
 package main
 
 import (
@@ -8,5 +10,5 @@ import (
 )
 
 func main() {
-	os.Exit(cli.New().Run(os.Args[1:]))
+	os.Exit(cli.Main(os.Args[1:]))
 }

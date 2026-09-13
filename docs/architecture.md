@@ -57,7 +57,7 @@ logging — is interfaces plus composition.
 | `config` (`packages/config`) | Typed `Config`, `.env` parsing, env precedence | any sibling package |
 | `logger` (`packages/logger`) | `Logger` interface, `slog` backend | any sibling package |
 | `middleware` (`packages/middleware`) | Recovery (+stack), Logging (+request_id, streaming-safe), CORS (+expose), RequestID, Timeout (JSON 503), SecureHeaders, RateLimit (honest Retry-After, proxy-aware) over `router` | `core` |
-| `cli` (`packages/cli`) | `new` scaffolding, `generate` (module/controller/service), `version` | `core` internals beyond templates |
+| `cli` (`packages/cli`) | cobra tree (`new`, `generate`, `version`), generators returning `FileChange` events, `ui` design system (theme, no-color, verbose), ldflags/buildinfo versioning | `core` internals beyond templates |
 | `pipes` (`packages/pipes`) | Tag validation engine (`required,min,max,len,gte,lte,email,uuid,url,oneof` + `RegisterRule` + `ValidateStrict`), `ValidateBody`, `BindQuery` (strict), `BindHeader`, `BindPath`, `Page`, typed `Parse`/`Path`/`Query` | `router`, `core` (HttpError only) |
 | `auth` (`packages/auth`) | HS256 JWT + bcrypt passwords, access/refresh pairs with rotation, `AuthGuard`, `RequireRole`/`RequireAnyRole` | `router`, `core` (HttpError, guards only) |
 | `grovtest` (`packages/grovtest`) | HTTP test harness: JSON client, `Decode`, `RequireStatus` | sibling packages (imports `core` App only) |

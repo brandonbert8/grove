@@ -251,12 +251,35 @@ app.OnStop(pool.Close)     // reversed, after HTTP drain — OnShutdown
 
 ## 🖥️ CLI
 
+```text
+◆ Grove
+
+A structured backend framework for Go.
+
+Usage:
+  grove [command]
+
+Commands:
+  generate    Generate a Grove component
+  new         Create a new Grove application
+  version     Print the Grove CLI version
+
+Aliases:
+  generate, g
+
+Examples:
+  grove new api
+  grove g module users
 ```
-grove new <project> [--force]            scaffold a new project
-grove generate module <name>         scaffold modules/<name> (module+service+controller)
-grove generate controller <name>     add a controller to modules/<name> (reports wiring)
-grove generate service <name>        add a service to modules/<name> (patches providers)
-grove version                        print the CLI version
+
+```bash
+grove new demo --grove-version v0.2.0   # pin the framework version
+grove g module billing                  # scaffold + register in main.go
+grove g controller billing              # add a controller (reports wiring)
+grove g service billing                 # add a service (patches providers)
+grove version                           # CLI + Go + OS
+grove --no-color new demo               # plain output for CI/logs
+grove --verbose new demo                # debug details
 ```
 
 Generated code compiles — CI even builds a fresh scaffold to prove it.
