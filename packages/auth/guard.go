@@ -42,21 +42,67 @@ func CurrentUser(c router.Context) (Claims, bool) {
 }
 
 // RequireRole builds a guard that layers on top of AuthGuard: the request
-// must carry role in claims Extra["roles"] ([]any of strings).
+// must carry role in claims Extra["roles"].
+//
+// Roles accept the shapes JWT round-trips produce: []any (encoding/json),
+// []string (hand-built claims), or a single string. Anything else denies
+// with 403 instead of failing open or panicking.
 func RequireRole(role string) router.Middleware {
 	return grove.UseGuard(grove.GuardFunc(func(c router.Context) error {
 		claims, ok := CurrentUser(c)
 		if !ok {
 			return grove.Unauthorized("missing bearer token")
 		}
-		roles, _ := claims.Extra["roles"].([]any)
-		for _, r := range roles {
-			if s, _ := r.(string); s == role {
+		for _, r := range claimRoles(claims) {
+			if r == role {
 				return nil
 			}
 		}
 		return grove.Forbidden("insufficient role")
 	}))
+}
+
+// RequireAnyRole passes when the caller carries at least one of roles.
+func RequireAnyRole(roles ...string) router.Middleware {
+	return grove.UseGuard(grove.GuardFunc(func(c router.Context) error {
+		claims, ok := CurrentUser(c)
+		if !ok {
+			return grove.Unauthorized("missing bearer token")
+		}
+		have := claimRoles(claims)
+		for _, want := range roles {
+			for _, h := range have {
+				if h == want {
+					return nil
+				}
+			}
+		}
+		return grove.Forbidden("insufficient role")
+	}))
+}
+
+// claimRoles normalizes Extra["roles"] across JSON and hand-built shapes.
+func claimRoles(claims Claims) []string {
+	raw, ok := claims.Extra["roles"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case string:
+		return []string{v}
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, r := range v {
+			if s, ok := r.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 // bearerToken splits an Authorization header into its token.
