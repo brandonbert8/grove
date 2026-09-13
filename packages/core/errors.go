@@ -90,6 +90,18 @@ func Internal(msg string, details ...any) *HttpError {
 	return NewHttpError(http.StatusInternalServerError, msg, details...)
 }
 
+// ErrorDetails returns the machine-readable Details payload, if any.
+//
+// It backs router's structural detailer contract so validation
+// failures (and other rich errors) survive the trip to the client as
+// {"error","status","details"} without core↔router imports cycling.
+func (e *HttpError) ErrorDetails() any {
+	if e == nil {
+		return nil
+	}
+	return e.Details
+}
+
 // AsHttpError unwraps err to an *HttpError when possible.
 func AsHttpError(err error) (*HttpError, bool) {
 	var he *HttpError

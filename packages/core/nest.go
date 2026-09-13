@@ -62,11 +62,44 @@ func Provide0[T any](lifetime di.Lifetime, build func() T) Provider {
 // reflection-free answer to decorators like @Get(). Method is an HTTP
 // verb ("GET", "POST", ...), Path is relative to the controller prefix,
 // and Middleware holds route-scoped guards, interceptors, and pipes.
+//
+// Summary, Description, Tags, and Deprecated are documentation metadata
+// (the @ApiOperation/@ApiTags equivalent): they feed App.Docs and the
+// openapi package, and never affect routing. Query, Responses, and
+// Security are the @ApiQuery/@ApiResponse/@ApiBearerAuth equivalent.
 type Endpoint struct {
 	Method     string
 	Path       string
 	Handler    router.HandlerFunc
 	Middleware []router.Middleware
+	// Summary is a short operation title for docs.
+	Summary string
+	// Description is long-form operation docs.
+	Description string
+	// Tags groups the operation (merged with controller tags).
+	Tags []string
+	// Deprecated marks the operation deprecated in docs.
+	Deprecated bool
+	// Query declares query parameters for docs.
+	Query []QueryDef
+	// Responses maps status codes to descriptions for docs.
+	// Unlisted operations get a default response.
+	Responses map[int]string
+	// Security lists required security schemes for docs
+	// (e.g. []string{"bearerAuth"}).
+	Security []string
+}
+
+// QueryDef declares one query parameter for docs (the @ApiQuery
+// equivalent): explicit metadata instead of handler inference, which
+// Go cannot do without magic.
+type QueryDef struct {
+	// Name is the query parameter name.
+	Name string
+	// Description documents the parameter.
+	Description string
+	// Required marks a required parameter.
+	Required bool
 }
 
 // GET builds an Endpoint for the GET verb.
@@ -114,6 +147,11 @@ type ControllerDef struct {
 	Middleware []router.Middleware
 	// Endpoints is the route table.
 	Endpoints []Endpoint
+	// Tags groups every endpoint for docs (merged with endpoint tags).
+	Tags []string
+	// Security applies required schemes to every endpoint for docs
+	// (merged with endpoint security, e.g. JWT-guarded controllers).
+	Security []string
 }
 
 // register mounts the controller on r.
@@ -231,6 +269,7 @@ func (m *ModuleDef) Register(app *App) error {
 	}
 	for _, c := range m.Controllers {
 		c.register(app.Router)
+		app.recordDocs(c)
 	}
 	if m.BuildControllers != nil {
 		built, err := m.BuildControllers(app)
@@ -239,6 +278,7 @@ func (m *ModuleDef) Register(app *App) error {
 		}
 		for _, c := range built {
 			c.register(app.Router)
+			app.recordDocs(c)
 		}
 	}
 	return nil

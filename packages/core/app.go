@@ -1,6 +1,9 @@
 package grove
 
 import (
+	"context"
+	"time"
+
 	"github.com/brandonbert8/grove/packages/config"
 	"github.com/brandonbert8/grove/packages/di"
 	"github.com/brandonbert8/grove/packages/logger"
@@ -27,7 +30,22 @@ type App struct {
 	// builtModules dedupes *ModuleDef registration so shared imports
 	// build exactly once even when imported by several modules.
 	builtModules map[*ModuleDef]bool
+
+	// starts runs before listening (OnModuleInit / OnApplicationBootstrap);
+	// stops runs during shutdown in reverse order (OnApplicationShutdown).
+	starts []StartFunc
+	stops  []StopFunc
+	// shutdownTimeout bounds starts, stops, and graceful drain.
+	shutdownTimeout time.Duration
+	// docs mirrors mounted endpoint metadata for docs/tooling.
+	docs []EndpointDoc
 }
+
+// StartFunc boots a resource (DB pool, cron, queue) before serving.
+type StartFunc func(ctx context.Context) error
+
+// StopFunc releases a resource during shutdown.
+type StopFunc func(ctx context.Context) error
 
 // Option customizes an App.
 type Option func(*App)
@@ -68,6 +86,16 @@ func WithLogger(l logger.Logger) Option {
 	}
 }
 
+// WithShutdownTimeout bounds startup hooks, shutdown hooks, and the
+// graceful drain (default 10s).
+func WithShutdownTimeout(d time.Duration) Option {
+	return func(a *App) {
+		if d > 0 {
+			a.shutdownTimeout = d
+		}
+	}
+}
+
 // New builds an App with sane defaults and the given options.
 func New(opts ...Option) *App {
 	cfg, err := config.Load()
@@ -78,10 +106,11 @@ func New(opts ...Option) *App {
 		cfg = &config.Config{Port: 3000, LogLevel: "info", Env: "development"}
 	}
 	app := &App{
-		Router:    router.New(),
-		Container: di.New(),
-		Config:    cfg,
-		Logger:    logger.New(logger.StdOptions{Level: logger.ParseLevel(cfg.LogLevel)}),
+		Router:          router.New(),
+		Container:       di.New(),
+		Config:          cfg,
+		Logger:          logger.New(logger.StdOptions{Level: logger.ParseLevel(cfg.LogLevel)}),
+		shutdownTimeout: 10 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(app)
@@ -114,4 +143,28 @@ func (a *App) MustRegister(mods ...Module) {
 // Modules returns the registered modules in registration order.
 func (a *App) Modules() []Module {
 	return append([]Module(nil), a.modules...)
+}
+
+// OnStart registers hooks that run in order before Run starts
+// listening — the Go equivalent of NestJS OnModuleInit /
+// OnApplicationBootstrap (open pools, start crons, warm caches).
+// A hook failure aborts startup and Run returns the error.
+func (a *App) OnStart(fns ...StartFunc) {
+	for _, fn := range fns {
+		if fn != nil {
+			a.starts = append(a.starts, fn)
+		}
+	}
+}
+
+// OnStop registers hooks that run in reverse order during shutdown —
+// the equivalent of NestJS OnApplicationShutdown / enableShutdownHooks
+// (close pools, flush queues). Hooks run after the HTTP drain, so
+// in-flight handlers still have their resources while draining.
+func (a *App) OnStop(fns ...StopFunc) {
+	for _, fn := range fns {
+		if fn != nil {
+			a.stops = append(a.stops, fn)
+		}
+	}
 }
