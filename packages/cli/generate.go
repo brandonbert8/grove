@@ -6,93 +6,97 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/brandonbert8/grove/packages/cli/ui"
 )
 
 // validName constrains generated package/module names to safe Go identifiers.
 var validName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
-// generate dispatches `grove generate <kind> <name>`.
-func (r *Runner) generate(kind, name string, out func(string)) error {
+// GenerateResult is one generator run: file operations for the renderer
+// plus warning notices (manual steps). Nothing prints here.
+type GenerateResult struct {
+	Changes []ui.FileChange
+	Notices []string
+}
+
+// Generate runs `grove generate <kind> <name>` inside the project found
+// above rootDir. Invalid names/kinds are UsageErrors (exit 2); anything
+// else is a runtime error with hints added by the command layer.
+func Generate(rootDir, kind, name string) (GenerateResult, error) {
+	var res GenerateResult
 	name = strings.ToLower(strings.TrimSpace(name))
 	if !validName.MatchString(name) {
-		return fmt.Errorf("invalid name %q: use lowercase letters, digits, underscores", name)
+		return res, &UsageError{Msg: fmt.Sprintf("invalid name %q: use lowercase letters, digits, underscores", name)}
 	}
-	root, _, err := findModuleRoot(r.Dir)
+	root, modPath, err := findModuleRoot(rootDir)
 	if err != nil {
-		return err
+		return res, err
 	}
 	target := filepath.Join(root, "modules", name)
 	switch strings.ToLower(kind) {
 	case "module":
-		if err := writeFiles(target, moduleFiles(name)); err != nil {
-			return err
+		changes, err := writeFilesCollect(target, moduleFiles(name))
+		if err != nil {
+			return res, err
 		}
-		out(fmt.Sprintf("created module %s in %s", name, relPath(target)))
+		res.Changes = append(res.Changes, rebase(target, changes)...)
+		if chg, notice := registerMainGo(root, modPath, name); chg != nil {
+			res.Changes = append(res.Changes, *chg)
+		} else if notice != "" {
+			res.Notices = append(res.Notices, notice)
+		}
 	case "controller":
-		ensureDir(target)
-		if err := writeFiles(target, map[string]string{
+		changes, err := writeFilesCollect(target, map[string]string{
 			"handler.go": controllerFile(name),
-		}); err != nil {
-			return err
+		})
+		if err != nil {
+			return res, err
 		}
-		out(wireControllerReport(target, name))
+		res.Changes = append(res.Changes, rebase(target, changes)...)
+		if notice := wireController(target, name); notice != "" {
+			res.Notices = append(res.Notices, notice)
+		}
 	case "service":
-		ensureDir(target)
-		if err := writeFiles(target, map[string]string{
+		changes, err := writeFilesCollect(target, map[string]string{
 			"service.go": serviceFile(name, title(name)),
-		}); err != nil {
-			return err
+		})
+		if err != nil {
+			return res, err
 		}
-		out(wireServiceReport(target, name))
+		res.Changes = append(res.Changes, rebase(target, changes)...)
+		if chg, notice := wireService(target, name); chg != nil {
+			res.Changes = append(res.Changes, *chg)
+		} else if notice != "" {
+			res.Notices = append(res.Notices, notice)
+		}
 	default:
-		return fmt.Errorf("unknown generate kind %q: want module|controller|service", kind)
+		return res, &UsageError{Msg: fmt.Sprintf("unknown generate kind %q: want module|controller|service", kind)}
 	}
-	return nil
+	// A fully-skipped run says so explicitly instead of a bare success.
+	if len(res.Changes) > 0 {
+		allSkip := true
+		for _, c := range res.Changes {
+			if c.Action != ui.Skip {
+				allSkip = false
+				break
+			}
+		}
+		if allSkip {
+			res.Notices = append(res.Notices,
+				fmt.Sprintf("%s %q already exists — nothing to do", title(strings.ToLower(kind)), name))
+		}
+	}
+	return res, nil
 }
 
-// providersAnchor marks the Providers entry point in generated module.go.
-// `grove generate service` inserts above it; its presence proves the
-// file is in generated shape and safe to patch.
-const providersAnchor = "\t\t// grove:providers\n"
-
-// wireServiceReport patches module.go Providers when possible and
-// reports the wiring state explicitly — never silently.
-func wireServiceReport(target, name string) string {
-	rel := relPath(target)
-	ctor := "New" + title(name) + "Service"
-	p := filepath.Join(target, "module.go")
-	data, err := os.ReadFile(p)
-	if err != nil {
-		return fmt.Sprintf("created service in %s (no module.go: run `grove generate module %s` first, then add %s to Providers)", rel, name, ctor)
+// rebase rewrites change paths (relative to dir) as cwd-relative display
+// paths, e.g. module.go under modules/billing.
+func rebase(dir string, changes []ui.FileChange) []ui.FileChange {
+	for i, c := range changes {
+		changes[i].Path = relPath(filepath.Join(dir, c.Path))
 	}
-	src := string(data)
-	if strings.Contains(src, ctor) {
-		return fmt.Sprintf("created service in %s (already wired in module.go providers)", rel)
-	}
-	if strings.Count(src, providersAnchor) != 1 {
-		return fmt.Sprintf("created service in %s (module.go is not in generated shape: add grove.Provide0(di.Singleton, %s) to Providers manually)", rel, ctor)
-	}
-	line := "\t\tgrove.Provide0(di.Singleton, " + ctor + "),\n"
-	patched := strings.Replace(src, providersAnchor, line+providersAnchor, 1)
-	if err := os.WriteFile(p, []byte(patched), 0o644); err != nil {
-		return fmt.Sprintf("created service in %s (patch failed: %v — add %s to Providers manually)", rel, err, ctor)
-	}
-	return fmt.Sprintf("created service in %s (wired into module.go providers)", rel)
-}
-
-// wireControllerReport verifies the generated handler is picked up by
-// module.go BuildControllers and reports the wiring state explicitly.
-func wireControllerReport(target, name string) string {
-	rel := relPath(target)
-	ctor := "New" + title(name) + "Handler"
-	data, err := os.ReadFile(filepath.Join(target, "module.go"))
-	if err != nil {
-		return fmt.Sprintf("created controller in %s (no module.go: run `grove generate module %s` first, then wire %s)", rel, name, ctor)
-	}
-	if strings.Contains(string(data), ctor) {
-		return fmt.Sprintf("created controller in %s (picked up by module.go BuildControllers)", rel)
-	}
-	return fmt.Sprintf("created controller in %s (module.go does not reference %s: wire it into BuildControllers)", rel, ctor)
+	return changes
 }
 
 // moduleFiles returns the full file set for a new module.
@@ -132,26 +136,6 @@ func findModuleRoot(dir string) (root, modPath string, err error) {
 		d = parent
 	}
 }
-
-// writeFiles creates dir and writes each file, refusing to overwrite.
-func writeFiles(dir string, files map[string]string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	for rel, content := range files {
-		p := filepath.Join(dir, rel)
-		if _, err := os.Stat(p); err == nil {
-			return fmt.Errorf("file already exists: %s", p)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// ensureDir creates dir when missing, ignoring errors (writeFiles reports).
-func ensureDir(dir string) { _ = os.MkdirAll(dir, 0o755) }
 
 // relPath shortens p for display.
 func relPath(p string) string {
