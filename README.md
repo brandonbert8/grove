@@ -1,17 +1,53 @@
-# Grove
+<div align="center">
 
-A modern, modular Go backend framework. Idiomatic Go first: composition over
-magic, compile-time performance over runtime reflection, and clear package
-boundaries that scale from a single `GET /hello` to an ecosystem of
-microservices.
+# 🌿 Grove
 
-> v0.2.0: NestJS-style modules, controllers, guards, pipes, JWT auth,
-> validation, lifecycle hooks, OpenAPI, a test harness, and a functional
-> `generate` CLI over a Chi HTTP engine. See [Roadmap](#roadmap).
+**A modern, modular Go backend framework with NestJS-grade developer experience.**
 
-## Installation
+_Composition over magic · compile-time over reflection · clear boundaries from `GET /hello` to microservices._
 
-Requires **Go 1.25+**.
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Release](https://img.shields.io/badge/release-v0.2.0-blue)](https://github.com/brandonbert8/grove/tags)
+[![CI](https://github.com/brandonbert8/grove/actions/workflows/ci.yml/badge.svg)](https://github.com/brandonbert8/grove/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Deps](https://img.shields.io/badge/deps-chi_%2B_x%2Fcrypto-lightgrey)](go.mod)
+
+</div>
+
+## ✨ Why Grove?
+
+| 🧩 | **NestJS-style modules** — `ModuleDef` with imports, providers & controllers. No decorators, no magic: plain structs the compiler understands. |
+|---|---|
+| 💉 | **Explicit DI** — singletons, transients & lazy singletons with constructor injection. No reflection, no global container. |
+| 🛡️ | **Guards & Auth** — `CanActivate`, JWT access + rotating refresh tokens, `bcrypt`, roles. |
+| 🔍 | **Pipes** — validate bodies, query, headers & path params with a tag engine you can extend. |
+| 🧪 | **Test harness** — drive your app through `httptest`, no booted server needed. |
+| 📖 | **OpenAPI 3.1** — generated from your route metadata, served in one line. |
+| ⚡ | **Chi engine** — `Grove → Chi → net/http`. Battle-tested routing, Grove-owned API. You never import Chi. |
+| 🖥️ | **CLI** — `new` + `generate` scaffolding that actually compiles. |
+
+## 🗺️ Coming from NestJS?
+
+| NestJS | Grove |
+|---|---|
+| `@Module()` | `ModuleDef` + `AsModule()` |
+| `@Controller()` / `@Get()` | `ControllerDef` + `Endpoint` (`GET()`, `POST()`…) |
+| `@Injectable()` + constructor DI | `Provide` / `Provide0` + `di.ResolveAs[T]` |
+| `@UseGuards()` | `UseGuard()` / per-controller `Middleware` |
+| `ValidationPipe` | `pipes.ValidateBody` / `BindQuery` / `BindHeader` / `BindPath` |
+| `ParseIntPipe` | `pipes.Path[int](c, "id")` — one generic, not one class per type |
+| `@ApiOperation` + Swagger | `Endpoint{Summary, Tags, Responses}` + `openapi.Mount` |
+| Passport JWT | `auth.Service` + `AuthGuard` + `RequireRole` |
+| `bcrypt` | `auth.HashPassword` / `ComparePassword` |
+| `OnModuleInit` / `OnShutdown` | `app.OnStart` / `app.OnStop` |
+| Terminus | `HealthModule` / `HealthModuleWithChecks` |
+| Testing module | `grovtest` |
+| `HttpException` | `HttpError` (+ machine-readable `details`) |
+| `nest generate` | `grove generate` |
+
+## 🚀 Quick Start
+
+**Requires Go 1.26+.**
 
 ```bash
 go install github.com/brandonbert8/grove/cmd/grove@latest
@@ -19,15 +55,13 @@ go install github.com/brandonbert8/grove/cmd/grove@latest
 git clone https://github.com/brandonbert8/grove && cd grove && go build ./...
 ```
 
-## Quick Start
-
 ```bash
 grove new myapp
 cd myapp
 go mod tidy
 go run .
-curl localhost:3000/hello
-# {"message":"Hello Grove"}
+curl localhost:3000/hello   # {"message":"Hello Grove"}
+curl localhost:3000/healthz # {"status":"ok"}
 ```
 
 Or wire it up by hand:
@@ -44,18 +78,24 @@ import (
 
 func main() {
 	app := grove.New()
-	app.Router.Use(middleware.Recovery(app.Logger), middleware.Logging(app.Logger))
+	app.Router.Use(
+		middleware.Recovery(app.Logger),
+		middleware.RequestID(),
+		middleware.Logging(app.Logger),
+	)
 
 	app.MustRegister(grove.NewModule("hello", func(app *grove.App) error {
 		if err := di.RegisterSingletonAs(app.Container, "Hello Grove"); err != nil {
 			return err
 		}
 		msg, _ := di.ResolveAs[string](app.Container)
-		app.Router.GET("/hello", func(c router.Context) error {
+		app.Route("GET", "/hello", func(c router.Context) error {
 			return c.JSON(200, map[string]string{"message": msg})
 		})
 		return nil
 	}))
+
+	app.MustRegister(grove.HealthModule("").AsModule())
 
 	if err := app.Run(":3000"); err != nil {
 		panic(err)
@@ -77,7 +117,7 @@ curl -X POST localhost:3000/auth/refresh -d '{"refresh_token":"<refresh_token>"}
 curl localhost:3000/openapi.json   # generated OpenAPI 3.1 spec
 ```
 
-## NestJS-style modules
+## 🧩 NestJS-style modules
 
 Go has no decorators, so Grove uses plain structs: a route table
 (`Endpoint`) instead of `@Get()`, and a module definition instead of
@@ -98,9 +138,12 @@ users := &grove.ModuleDef{
         h := NewUsersHandler(svc)
         return []grove.ControllerDef{{
             Prefix:     "/users",
+            Tags:       []string{"users"},
+            Security:   []string{"bearerAuth"},
             Middleware: []router.Middleware{guard}, // guards & interceptors
             Endpoints: []grove.Endpoint{
-                grove.GET("", h.List),
+                {Method: "GET", Path: "", Handler: h.List, Summary: "List users",
+                    Responses: map[int]string{200: "users"}},
                 grove.GET("/{id}", h.Get),
                 grove.POST("", h.Create, fauth.RequireRole("admin")),
             },
@@ -117,13 +160,108 @@ validate through pipes:
 func (h *Handler) Create(c router.Context) error {
     var in CreateUserInput // struct tags: validate:"required,email,..."
     if err := pipes.ValidateBody(c, &in); err != nil {
-        return err // 400 bad JSON, 422 failed validation
+        return err // 400 bad JSON, 422 failed validation (+ field details)
     }
+    page, err := pipes.Query(c, "page", 1) // typed ?page with default
+    if err != nil {
+        return err // 400
+    }
+    _ = page
     return c.JSON(201, h.svc.Create(in))
 }
 ```
 
-## Project Structure
+## 🛡️ Middleware & Auth
+
+Production-ready middleware, all `net/http`-friendly and streaming-safe:
+
+| Middleware | What it does |
+|---|---|
+| `Recovery` | Panics → JSON 500 with stack-trace log |
+| `RequestID` | Mint/reuse `X-Request-ID`, echo it, correlate logs |
+| `Logging` | Method, path, status, latency (+ `request_id`) |
+| `CORS` | Explicit allow-lists, preflights, `ExposeHeaders` |
+| `Timeout` | Handler deadline → JSON 503 (race-safe writer) |
+| `SecureHeaders` | `nosniff`, `DENY`, `no-referrer`, TLS-only HSTS |
+| `RateLimit` | Per-IP token bucket → JSON 429 + honest `Retry-After` |
+
+Auth without Passport-phobia:
+
+```go
+hash, _ := auth.HashPassword("secret")              // bcrypt
+pair, _ := svc.IssuePair("ada", map[string]any{     // access + refresh
+    "roles": []string{"admin"},
+})
+guard := auth.AuthGuard(svc)                        // Bearer guard
+adminOnly := auth.RequireRole("admin")              // role guard
+next, _ := auth.Rotate(ctx, svc, store, pair.RefreshToken) // single-use rotation
+```
+
+## 🧪 Testing
+
+No booted servers. Drive the real app through `httptest`:
+
+```go
+cli := grovtest.New(app).Bearer(token)
+rec := cli.Post(t, "/users", map[string]string{"name": "Ada"})
+grovtest.RequireStatus(t, rec, 201)
+body := grovtest.Decode[map[string]any](t, rec)
+// 422s carry machine-readable details:
+rec = cli.Post(t, "/users", map[string]string{"name": "x"})
+grovtest.RequireStatus(t, rec, 422)
+```
+
+## 📖 OpenAPI
+
+Document routes as data, serve the spec in one line:
+
+```go
+openapi.Mount(app, "/openapi.json", openapi.Info{
+    Title: "My API", Version: "1.0.0",
+})
+// → paths, params, response codes, bearerAuth schemes — always in sync,
+//    because the spec builds lazily from the real router.
+```
+
+## ⚙️ Configuration
+
+`PORT` (or `GROVE_PORT`), `DATABASE_URL`, `LOG_LEVEL`
+(`debug|info|warn|error`), `APP_NAME`, `ENV`, `HOST`, `JWT_SECRET` — via
+environment or a `.env` file discovered from the working directory
+upward.
+
+```go
+cfg, _ := config.Load()
+fmt.Println(cfg.Addr()) // ":3000"
+
+// Fail fast on secrets, catch GROVE_ typos:
+cfg := config.MustLoad(
+    config.WithRequired("JWT_SECRET", "DATABASE_URL"),
+    config.WithStrict(),
+)
+svc := auth.NewService([]byte(cfg.JWTSecret), cfg.AppName)
+```
+
+Plus lifecycle hooks for the real world:
+
+```go
+app.OnStart(pool.Connect)  // abort boot on error — OnModuleInit
+app.OnStop(pool.Close)     // reversed, after HTTP drain — OnShutdown
+```
+
+## 🖥️ CLI
+
+```
+grove new <project> [--force]            scaffold a new project
+grove generate module <name>         scaffold modules/<name> (module+service+controller)
+grove generate controller <name>     add a controller to modules/<name> (reports wiring)
+grove generate service <name>        add a service to modules/<name> (patches providers)
+grove version                        print the CLI version
+```
+
+Generated code compiles — CI even builds a fresh scaffold to prove it.
+
+## 🏗️ Project Structure
 
 ```
 grove/
@@ -159,36 +297,7 @@ params, groups, 404/405 — while Grove owns handlers, middleware,
 `docs/architecture.md`. Escape hatches: `ctx.Request()`,
 `ctx.ResponseWriter()`, `app.Handler()`.
 
-## Configuration
-
-`PORT` (or `GROVE_PORT`), `DATABASE_URL`, `LOG_LEVEL`
-(`debug|info|warn|error`), `APP_NAME`, `ENV`, `HOST`, `JWT_SECRET` — via
-environment or a `.env` file discovered from the working directory
-upward.
-
-```go
-cfg, _ := config.Load()
-fmt.Println(cfg.Addr()) // ":3000"
-
-// Fail fast on secrets, catch GROVE_ typos:
-cfg := config.MustLoad(
-    config.WithRequired("JWT_SECRET", "DATABASE_URL"),
-    config.WithStrict(),
-)
-svc := auth.NewService([]byte(cfg.JWTSecret), cfg.AppName)
-```
-
-## CLI
-
-```
-grove new <project> [--force]            scaffold a new project
-grove generate module <name>         scaffold modules/<name> (module+service+controller)
-grove generate controller <name>     add a controller to modules/<name> (reports wiring)
-grove generate service <name>        add a service to modules/<name> (patches providers)
-grove version                        print the CLI version
-```
-
-## Roadmap
+## 🗺️ Roadmap
 
 **Phase 2 (done)** — `generate` commands, `ModuleDef` with imports,
 `ControllerDef` route tables, guards/interceptors (`CanActivate`,
@@ -215,3 +324,7 @@ middleware.
 cron jobs, queue workers, plugin system, Docker/K8s scaffolds.
 
 See `docs/architecture.md` for where each piece integrates.
+
+## 📄 License
+
+MIT — see [LICENSE](LICENSE). Built with 💚 and stdlib-first Go.
