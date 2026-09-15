@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -157,7 +158,7 @@ func TestNewFullOutput(t *testing.T) {
 	}
 	for _, want := range []string{
 		"◆ Grove", "CREATE", "go.mod", "main.go", "README.md",
-		"modules/hello/module.go", "✔", "Next steps:",
+		filepath.Join("modules", "hello", "module.go"), "✔", "Next steps:",
 		"go mod tidy", "http://localhost:3000",
 	} {
 		if !strings.Contains(stdout, want) {

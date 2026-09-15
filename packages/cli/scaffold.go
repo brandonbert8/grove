@@ -56,14 +56,14 @@ func Scaffold(parentDir, name string, force bool, groveVersion string) (string, 
 	}
 	modName := filepath.Base(base)
 	files := map[string]string{
-		"go.mod":                   scaffoldGoMod(modPath, groveVersion),
-		"main.go":                  scaffoldMain(modPath),
-		".env.example":             "PORT=3000\nLOG_LEVEL=info\n",
-		".gitignore":               ".env\n",
-		"modules/hello/module.go":  scaffoldHelloModule(),
-		"modules/hello/service.go": scaffoldHelloService(),
-		"modules/hello/handler.go": scaffoldHelloHandler(),
-		"README.md":                "# " + modName + "\n\nCreated with `grove new " + modName + "`.\n\nRun with `go run .`.\n",
+		"go.mod":                      scaffoldGoMod(modPath, groveVersion),
+		"main.go":                     scaffoldMain(modPath),
+		".env.example":                "PORT=3000\nLOG_LEVEL=info\n",
+		".gitignore":                  ".env\n",
+		"modules/hello/module.go":     scaffoldHelloModule(),
+		"modules/hello/service.go":    scaffoldHelloService(),
+		"modules/hello/controller.go": scaffoldHelloController(),
+		"README.md":                   "# " + modName + "\n\nCreated with `grove new " + modName + "`.\n\nRun with `go run .`.\n",
 	}
 	changes, err := writeFilesCollect(base, files)
 	if err != nil {
@@ -162,6 +162,9 @@ func main() {
 		middleware.RequestID(),
 		middleware.Logging(app.Logger),
 	)
+	// NestJS-style globals (the APP_GUARD / APP_INTERCEPTOR equivalent):
+	// app.UseGuards(grove.GuardFunc(requireAuth))
+	// app.UseInterceptors(middleware.RequestID())
 
 	app.MustRegister(
 		hello.Module.AsModule(),
@@ -193,16 +196,16 @@ var Module = &grove.ModuleDef{
 		grove.Provide0(di.Singleton, NewService),
 	},
 	BuildControllers: func(app *grove.App) ([]grove.ControllerDef, error) {
-		svc, err := di.ResolveAs[*Service](app.Container)
+		ctrl, err := grove.Wire(app, NewController)
 		if err != nil {
 			return nil, err
 		}
-		h := NewHandler(svc)
 		return []grove.ControllerDef{{
 			Prefix: "/hello",
+			Tags:   []string{"hello"},
 			Endpoints: []grove.Endpoint{
 				// Empty path mounts exactly at the prefix: GET /hello.
-				grove.GET("", h.Greet),
+				grove.GET("", ctrl.Greet, grove.WithSummary("Greet")),
 			},
 		}}, nil
 	},
@@ -225,21 +228,22 @@ func (s *Service) Message() string { return s.message }
 `
 }
 
-// scaffoldHelloHandler returns the example handler.
-func scaffoldHelloHandler() string {
+// scaffoldHelloController returns the example controller
+// (the @Controller() equivalent for the hello module).
+func scaffoldHelloController() string {
 	return `package hello
 
 import "github.com/brandonbert8/grove/packages/router"
 
-// Handler serves hello routes.
-type Handler struct{ svc *Service }
+// Controller serves hello routes.
+type Controller struct{ svc *Service }
 
-// NewHandler builds a Handler.
-func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
+// NewController builds a Controller with constructor injection.
+func NewController(svc *Service) *Controller { return &Controller{svc: svc} }
 
 // Greet answers GET /hello.
-func (h *Handler) Greet(c router.Context) error {
-	return c.JSON(200, map[string]string{"message": h.svc.Message()})
+func (c *Controller) Greet(ctx router.Context) error {
+	return ctx.JSON(200, map[string]string{"message": c.svc.Message()})
 }
 `
 }

@@ -48,13 +48,27 @@ func Generate(rootDir, kind, name string) (GenerateResult, error) {
 		}
 	case "controller":
 		changes, err := writeFilesCollect(target, map[string]string{
-			"handler.go": controllerFile(name),
+			"controller.go": controllerFile(name),
 		})
 		if err != nil {
 			return res, err
 		}
 		res.Changes = append(res.Changes, rebase(target, changes)...)
 		if notice := wireController(target, name); notice != "" {
+			res.Notices = append(res.Notices, notice)
+		}
+	case "resource":
+		// The `nest generate resource` equivalent: a full CRUD slice
+		// (module + service + controller) plus a smoke test, wired
+		// into main.go like `module`.
+		changes, err := writeFilesCollect(target, resourceFiles(name))
+		if err != nil {
+			return res, err
+		}
+		res.Changes = append(res.Changes, rebase(target, changes)...)
+		if chg, notice := registerMainGo(root, modPath, name); chg != nil {
+			res.Changes = append(res.Changes, *chg)
+		} else if notice != "" {
 			res.Notices = append(res.Notices, notice)
 		}
 	case "service":
@@ -71,7 +85,7 @@ func Generate(rootDir, kind, name string) (GenerateResult, error) {
 			res.Notices = append(res.Notices, notice)
 		}
 	default:
-		return res, &UsageError{Msg: fmt.Sprintf("unknown generate kind %q: want module|controller|service", kind)}
+		return res, &UsageError{Msg: fmt.Sprintf("unknown generate kind %q: want module|controller|service|resource", kind)}
 	}
 	// A fully-skipped run says so explicitly instead of a bare success.
 	if len(res.Changes) > 0 {
@@ -102,10 +116,19 @@ func rebase(dir string, changes []ui.FileChange) []ui.FileChange {
 // moduleFiles returns the full file set for a new module.
 func moduleFiles(name string) map[string]string {
 	return map[string]string{
-		"module.go":  genModuleFile(name),
-		"service.go": serviceFile(name, title(name)),
-		"handler.go": controllerFile(name),
+		"module.go":     genModuleFile(name),
+		"service.go":    serviceFile(name, title(name)),
+		"controller.go": controllerFile(name),
 	}
+}
+
+// resourceFiles returns the full file set for `generate resource`: the
+// module slice plus a compilable smoke test (the `nest g resource`
+// equivalent).
+func resourceFiles(name string) map[string]string {
+	files := moduleFiles(name)
+	files["resource_test.go"] = resourceTestFile(name)
+	return files
 }
 
 // findModuleRoot walks up from dir to the directory holding go.mod,
@@ -155,7 +178,9 @@ func title(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// genModuleFile renders module.go wiring service + controller.
+// genModuleFile renders module.go wiring service + controller in the
+// NestJS ModuleDef style: providers for DI, BuildControllers resolving
+// the controller with constructor injection.
 func genModuleFile(name string) string {
 	t := title(name)
 	return fmt.Sprintf(`// Package %[1]s implements the %[1]s module.
@@ -175,20 +200,48 @@ var Module = &grove.ModuleDef{
 		// grove:providers
 	},
 	BuildControllers: func(app *grove.App) ([]grove.ControllerDef, error) {
-		svc, err := di.ResolveAs[*%[2]sService](app.Container)
+		ctrl, err := grove.Wire(app, New%[2]sController)
 		if err != nil {
 			return nil, err
 		}
-		h := New%[2]sHandler(svc)
 		return []grove.ControllerDef{{
 			Prefix: "/%[1]s",
+			Tags:   []string{"%[1]s"},
 			Endpoints: []grove.Endpoint{
 				// Empty paths mount exactly at the prefix: GET/POST /%[1]s.
-				grove.GET("", h.List),
-				grove.POST("", h.Create),
+				grove.GET("", ctrl.List, grove.WithSummary("List %[1]s")),
+				grove.POST("", ctrl.Create, grove.WithSummary("Create %[1]s")),
+				// grove:endpoints
 			},
 		}}, nil
 	},
+}
+`, name, t)
+}
+
+// resourceTestFile renders a smoke test for a generated resource: it
+// boots the module in-memory and drives GET/POST through httptest,
+// the Test.createTestingModule equivalent.
+func resourceTestFile(name string) string {
+	t := title(name)
+	return fmt.Sprintf(`package %[1]s
+
+import (
+	"testing"
+
+	grove "github.com/brandonbert8/grove/packages/core"
+	"github.com/brandonbert8/grove/packages/grovtest"
+)
+
+// TestResourceSmoke boots the %[1]s module without a server and drives
+// its list/create endpoints through httptest.
+func TestResourceSmoke(t *testing.T) {
+	app := grove.New()
+	app.MustRegister(Module.AsModule())
+
+	cli := grovtest.New(app)
+	grovtest.RequireStatus(t, cli.Get(t, "/%[1]s"), 200)
+	grovtest.RequireStatus(t, cli.Post(t, "/%[1]s", map[string]string{"name": "%[2]s item"}), 201)
 }
 `, name, t)
 }

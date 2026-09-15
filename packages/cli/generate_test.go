@@ -36,7 +36,7 @@ func TestGenerateModule(t *testing.T) {
 		}
 	}
 	base := filepath.Join(dir, "modules", "billing")
-	for _, f := range []string{"module.go", "service.go", "handler.go"} {
+	for _, f := range []string{"module.go", "service.go", "controller.go"} {
 		data, err := os.ReadFile(filepath.Join(base, f))
 		if err != nil {
 			t.Fatalf("expected %s: %v", f, err)
@@ -51,7 +51,7 @@ func TestGenerateModule(t *testing.T) {
 	}
 	// Type and constructor names must agree across generated files.
 	svc, _ := os.ReadFile(filepath.Join(base, "service.go"))
-	hdl, _ := os.ReadFile(filepath.Join(base, "handler.go"))
+	hdl, _ := os.ReadFile(filepath.Join(base, "controller.go"))
 	for _, f := range []string{string(svc), string(hdl), string(mod)} {
 		if !strings.Contains(f, "BillingService") {
 			t.Fatalf("expected reference to BillingService:\n%s", f)
@@ -70,7 +70,7 @@ func TestGenerateControllerAndService(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := filepath.Join(dir, "modules", "orders")
-	for _, f := range []string{"handler.go", "service.go"} {
+	for _, f := range []string{"controller.go", "service.go"} {
 		if err := os.Remove(filepath.Join(base, f)); err != nil {
 			t.Fatal(err)
 		}
@@ -89,7 +89,7 @@ func TestGenerateControllerAndService(t *testing.T) {
 	if len(res.Notices) != 0 {
 		t.Fatalf("service must rewire silently, got %v", res.Notices)
 	}
-	for _, f := range []string{"handler.go", "service.go"} {
+	for _, f := range []string{"controller.go", "service.go"} {
 		if _, err := os.Stat(filepath.Join(base, f)); err != nil {
 			t.Fatalf("expected %s: %v", f, err)
 		}
@@ -106,7 +106,7 @@ func TestGenerateControllerNeedsModule(t *testing.T) {
 		t.Fatalf("must guide toward module generation, got %v", res.Notices)
 	}
 	// The file is still created; only wiring needs a human.
-	if _, err := os.Stat(filepath.Join(dir, "modules", "ghost", "handler.go")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "modules", "ghost", "controller.go")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -163,6 +163,57 @@ func TestGenerateServicePatchesProviders(t *testing.T) {
 		t.Fatalf("anchor must survive patching:\n%s", patched)
 	}
 	if err := checkGoSyntax(filepath.Join(base, "service.go"), modPath); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGenerateResource(t *testing.T) {
+	dir := setupProject(t)
+	res, err := Generate(dir, "resource", "billing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, c := range res.Changes {
+		paths = append(paths, c.Path)
+	}
+	for _, want := range []string{"module.go", "service.go", "controller.go", "resource_test.go"} {
+		found := false
+		for _, p := range paths {
+			if strings.HasSuffix(p, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("resource must create %s, got %v", want, paths)
+		}
+	}
+	base := filepath.Join(dir, "modules", "billing")
+	for _, f := range []string{"module.go", "service.go", "controller.go", "resource_test.go"} {
+		data, err := os.ReadFile(filepath.Join(base, f))
+		if err != nil {
+			t.Fatalf("expected %s: %v", f, err)
+		}
+		if !strings.Contains(string(data), "package billing") {
+			t.Fatalf("%s missing package clause", f)
+		}
+	}
+	// New Controller naming (not legacy Handler).
+	ctrl, _ := os.ReadFile(filepath.Join(base, "controller.go"))
+	if !strings.Contains(string(ctrl), "BillingController") || !strings.Contains(string(ctrl), "NewBillingController") {
+		t.Fatalf("controller.go must use BillingController:\n%s", ctrl)
+	}
+	mod, _ := os.ReadFile(filepath.Join(base, "module.go"))
+	if !strings.Contains(string(mod), "NewBillingController") {
+		t.Fatalf("module.go must wire NewBillingController:\n%s", mod)
+	}
+	if err := checkGoSyntax(
+		filepath.Join(base, "module.go"),
+		filepath.Join(base, "service.go"),
+		filepath.Join(base, "controller.go"),
+		filepath.Join(base, "resource_test.go"),
+	); err != nil {
 		t.Fatal(err)
 	}
 }

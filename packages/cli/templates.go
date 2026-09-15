@@ -38,8 +38,10 @@ func (s *%[2]sService) Add(item string) {
 `, pkg, typ)
 }
 
-// controllerFile renders a handler with list/create endpoints, JSON
-// binding, and validation through pipes.
+// controllerFile renders a NestJS-style controller with list/create
+// endpoints, JSON binding, and validation through pipes. The struct is
+// named XxxController (the @Controller() equivalent); its methods are
+// the route handlers wired into a ControllerDef in module.go.
 func controllerFile(pkg string) string {
 	t := title(pkg)
 	// Struct tags need backticks, which cannot appear inside a raw string
@@ -54,27 +56,28 @@ import (
 
 // CreateInput is the POST /%[1]s DTO.
 `+dto+`
-// %[2]sHandler serves the %[1]s routes.
-type %[2]sHandler struct{ svc *%[2]sService }
+// %[2]sController serves the %[1]s routes (the @Controller() equivalent).
+// Its methods are wired into a grove.ControllerDef in module.go.
+type %[2]sController struct{ svc *%[2]sService }
 
-// New%[2]sHandler builds the handler with constructor injection.
-func New%[2]sHandler(svc *%[2]sService) *%[2]sHandler {
-	return &%[2]sHandler{svc: svc}
+// New%[2]sController builds the controller with constructor injection.
+func New%[2]sController(svc *%[2]sService) *%[2]sController {
+	return &%[2]sController{svc: svc}
 }
 
 // List answers GET /%[1]s.
-func (h *%[2]sHandler) List(c router.Context) error {
-	return c.JSON(200, map[string]any{"items": h.svc.List()})
+func (c *%[2]sController) List(ctx router.Context) error {
+	return ctx.JSON(200, map[string]any{"items": c.svc.List()})
 }
 
 // Create answers POST /%[1]s.
-func (h *%[2]sHandler) Create(c router.Context) error {
-	var in CreateInput
-	if err := pipes.ValidateBody(c, &in); err != nil {
+func (c *%[2]sController) Create(ctx router.Context) error {
+	in, err := pipes.Body[CreateInput](ctx)
+	if err != nil {
 		return err
 	}
-	h.svc.Add(in.Name)
-	return c.JSON(201, map[string]any{"created": in.Name})
+	c.svc.Add(in.Name)
+	return ctx.JSON(201, map[string]any{"created": in.Name})
 }
 `, pkg, t)
 }

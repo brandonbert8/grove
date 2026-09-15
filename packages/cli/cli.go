@@ -53,7 +53,7 @@ func fail(r *ui.Renderer, code int, title, detail, hint string, err error) error
 //
 //	grove
 //	├── new [project] [--force] [--grove-version]
-//	├── generate (g) module|controller|service [name]
+//	├── generate (g) module|controller|service|resource [name]
 //	└── version
 func NewRootCommand() *cobra.Command {
 	g := &globalOpts{}
@@ -230,13 +230,13 @@ func newGenerateCommand(g *globalOpts) *cobra.Command {
 		Use:     "generate",
 		Aliases: []string{"g"},
 		Short:   "Generate a Grove component",
-		Example: "  grove generate module users\n  grove g controller users\n  grove g service users",
+		Example: "  grove generate module users\n  grove g controller users\n  grove g service users\n  grove g resource billing",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},
 	}
-	for _, kind := range []string{"module", "controller", "service"} {
+	for _, kind := range []string{"module", "controller", "service", "resource"} {
 		kind := kind
 		sub := &cobra.Command{
 			Use:   kind + " <name>",
