@@ -103,43 +103,57 @@ type QueryDef struct {
 }
 
 // GET builds an Endpoint for the GET verb.
-func GET(path string, h router.HandlerFunc, mw ...router.Middleware) Endpoint {
-	return Endpoint{Method: "GET", Path: path, Handler: h, Middleware: mw}
+//
+// Extra args accept router.Middleware (route-scoped guards and
+// interceptors, e.g. grove.POST("", h.Create, auth.RequireRole("admin"))),
+// EndpointOption docs and guard helpers (grove.WithSummary(...),
+// grove.Use(...)), and CanActivate guards (wrapped with UseGuard
+// automatically). Unknown argument types panic with a Grove message so
+// wiring mistakes fail fast at startup, never per request.
+func GET(path string, h router.HandlerFunc, opts ...any) Endpoint {
+	return buildEndpoint("GET", path, h, opts)
 }
 
-// POST builds an Endpoint for the POST verb.
-func POST(path string, h router.HandlerFunc, mw ...router.Middleware) Endpoint {
-	return Endpoint{Method: "POST", Path: path, Handler: h, Middleware: mw}
+// POST builds an Endpoint for the POST verb. See GET for opts.
+func POST(path string, h router.HandlerFunc, opts ...any) Endpoint {
+	return buildEndpoint("POST", path, h, opts)
 }
 
-// PUT builds an Endpoint for the PUT verb.
-func PUT(path string, h router.HandlerFunc, mw ...router.Middleware) Endpoint {
-	return Endpoint{Method: "PUT", Path: path, Handler: h, Middleware: mw}
+// PUT builds an Endpoint for the PUT verb. See GET for opts.
+func PUT(path string, h router.HandlerFunc, opts ...any) Endpoint {
+	return buildEndpoint("PUT", path, h, opts)
 }
 
-// DELETE builds an Endpoint for the DELETE verb.
-func DELETE(path string, h router.HandlerFunc, mw ...router.Middleware) Endpoint {
-	return Endpoint{Method: "DELETE", Path: path, Handler: h, Middleware: mw}
+// DELETE builds an Endpoint for the DELETE verb. See GET for opts.
+func DELETE(path string, h router.HandlerFunc, opts ...any) Endpoint {
+	return buildEndpoint("DELETE", path, h, opts)
 }
 
-// PATCH builds an Endpoint for the PATCH verb.
-func PATCH(path string, h router.HandlerFunc, mw ...router.Middleware) Endpoint {
-	return Endpoint{Method: "PATCH", Path: path, Handler: h, Middleware: mw}
+// PATCH builds an Endpoint for the PATCH verb. See GET for opts.
+func PATCH(path string, h router.HandlerFunc, opts ...any) Endpoint {
+	return buildEndpoint("PATCH", path, h, opts)
 }
 
 // ControllerDef groups endpoints under a prefix with optional shared
-// middleware, the Go equivalent of a NestJS @Controller. Build it with a
-// constructor that resolves services from the container:
+// middleware, the Go equivalent of a NestJS @Controller. The idiomatic
+// shape is a XxxController struct (methods are the route handlers)
+// plus one ControllerDef describing its prefix:
 //
-//	ctrl, err := di.ResolveAs[*UsersHandler](app.Container)
+//	type UsersController struct{ svc *UsersService }
+//	func NewUsersController(svc *UsersService) *UsersController {
+//	    return &UsersController{svc: svc}
+//	}
 //	usersController := grove.ControllerDef{
 //	    Prefix: "/users",
-//	    Guards: []router.Middleware{authGuard},
+//	    Middleware: []router.Middleware{authGuard},
 //	    Endpoints: []grove.Endpoint{
-//	        grove.GET("/", ctrl.List),
-//	        grove.POST("/", ctrl.Create),
+//	        grove.GET("/", ctrl.List, grove.WithSummary("List users")),
+//	        grove.POST("/", ctrl.Create, grove.Use(adminOnly)),
 //	    },
 //	}
+//
+// (The older XxxHandler naming still works: it is the same pattern
+// under the previous name. Prefer Controller for new code.)
 type ControllerDef struct {
 	// Prefix scopes every endpoint (e.g. "/users").
 	Prefix string

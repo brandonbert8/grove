@@ -184,6 +184,38 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// SchemaVar describes one known configuration variable: the declarative
+// config-schema entry (the ConfigModule validation equivalent) used by
+// Schema to document and audit the environment.
+type SchemaVar struct {
+	// Name is the primary env var name.
+	Name string
+	// Aliases are accepted alternative names.
+	Aliases []string
+	// Description documents the variable.
+	Description string
+	// Default is the value used when nothing sets it.
+	Default string
+}
+
+// Schema returns the known configuration variables in stable order, so
+// apps and docs can audit the environment:
+//
+//	for _, v := range config.Schema() {
+//	    fmt.Println(v.Name, "-", v.Description)
+//	}
+func Schema() []SchemaVar {
+	return []SchemaVar{
+		{Name: "APP_NAME", Aliases: []string{"GROVE_APP_NAME"}, Description: "Application name in logs and the CLI", Default: "grove-app"},
+		{Name: "ENV", Aliases: []string{"GROVE_ENV", "GO_ENV", "APP_ENV"}, Description: "Runtime environment: development, test, or production", Default: "development"},
+		{Name: "HOST", Aliases: []string{"GROVE_HOST"}, Description: "Interface to bind (empty means all interfaces)", Default: ""},
+		{Name: "PORT", Aliases: []string{"GROVE_PORT"}, Description: "TCP port to listen on (1-65535)", Default: "3000"},
+		{Name: "DATABASE_URL", Aliases: []string{"GROVE_DATABASE_URL"}, Description: "Primary database connection string", Default: ""},
+		{Name: "LOG_LEVEL", Aliases: []string{"GROVE_LOG_LEVEL"}, Description: "Logger verbosity: debug, info, warn, error", Default: "info"},
+		{Name: "JWT_SECRET", Aliases: []string{"GROVE_JWT_SECRET"}, Description: "Secret signing auth tokens (fail fast with WithRequired)", Default: ""},
+	}
+}
+
 // Addr returns the host:port pair suitable for net/http.
 func (c Config) Addr() string {
 	if c.Host == "" {
