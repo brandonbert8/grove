@@ -154,19 +154,28 @@ Grove copies NestJS developer experience, never its runtime magic:
   module — no special server path. `HealthModuleWithChecks` adds
   Terminus-style indicators with 200/503 semantics and a per-check
   timeout.
-- **Docs as data.** `Endpoint{Summary, Description, Tags, Deprecated,
-  Query, Responses, Security}` (the `@ApiOperation`/`@ApiQuery`/
-  `@ApiResponse`/`@ApiBearerAuth` equivalent) is recorded into
-  `App.Docs()` at `Register` time (`App.Route` and `App.RecordDocs`
-  cover non-module routes; raw `Router` use stays invisible by design);
+- **Docs as data.** `grove.WithSummary/WithDescription/WithTags/
+  WithQuery/WithResponses/WithSecurity` options on `GET/POST/...` (the
+  `@ApiOperation`/`@ApiQuery`/`@ApiResponse`/`@ApiBearerAuth`
+  equivalent) fill `Endpoint{Summary, ...}`, recorded into `App.Docs()`
+  at `Register` time (`App.Route` and `App.RecordDocs` cover non-module
+  routes; raw `Router` use stays invisible by design);
   `packages/openapi` renders OpenAPI 3.1 — paths, params, response
   codes, bearer schemes — and lazy `openapi.Mount` serves it in one
-  line, always current.
-- **Pipes beyond bodies.** `pipes.Path[T]` / `pipes.Query[T]` coerce
-  params with `*HttpError` 400s (the `ParseIntPipe` equivalent, but one
-  generic instead of one class per type); `RegisterRule` adds custom
-  validators (the custom-decorator equivalent); `uuid`/`url` join the
-  tag engine.
+  line, always current. `openapi.Lint` audits missing summaries and
+  responses like a docs-coverage `vet`.
+- **Pipes beyond bodies.** `pipes.Body[T]` decodes + validates DTOs in
+  one line (the `@Body()` + `ValidationPipe` equivalent);
+  `pipes.Path[T]` / `pipes.Query[T]` coerce params with `*HttpError`
+  400s (the `ParseIntPipe` equivalent, but one generic instead of one
+  class per type); `RegisterRule` adds custom validators (the
+  custom-decorator equivalent); `uuid`/`url` join the tag engine.
+- **Controllers, not handlers.** User route structs are named
+  `XxxController` (the `@Controller()` equivalent); `router.HandlerFunc`
+  stays the low-level function type. `grove.Inject` / `grove.Wire` /
+  `grove.Wire2` / `grove.ControllerFor` remove `ResolveAs` boilerplate
+  from `BuildControllers`, and `app.UseGuards/UseInterceptors/UsePipes`
+  are the `APP_GUARD` / `APP_INTERCEPTOR` / `APP_PIPE` equivalent.
 - **Rich errors over the wire.** `HttpError.Details` (e.g. validation
   field failures) now serializes as `{"error","status","details"}` via
   a structural router↔core contract — no import cycle.

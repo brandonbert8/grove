@@ -31,19 +31,21 @@ _Composition over magic · compile-time over reflection · clear boundaries from
 | NestJS | Grove |
 |---|---|
 | `@Module()` | `ModuleDef` + `AsModule()` |
-| `@Controller()` / `@Get()` | `ControllerDef` + `Endpoint` (`GET()`, `POST()`…) |
-| `@Injectable()` + constructor DI | `Provide` / `Provide0` + `di.ResolveAs[T]` |
-| `@UseGuards()` | `UseGuard()` / per-controller `Middleware` |
-| `ValidationPipe` | `pipes.ValidateBody` / `BindQuery` / `BindHeader` / `BindPath` |
+| `@Controller()` / `@Get()` | `XxxController` + `ControllerDef` + `grove.GET()` with `WithSummary()` options |
+| `@Injectable()` + constructor DI | `Provide` / `Provide0` + `grove.Inject[T]` / `grove.Wire(app, NewXxxController)` |
+| `@UseGuards()` / `APP_GUARD` | `UseGuard()` / per-controller `Middleware` / `app.UseGuards()` |
+| `@UseInterceptors()` / `APP_INTERCEPTOR` | `app.UseInterceptors()` + `grove.WrapData()` / `MapResponse()` |
+| `ValidationPipe` + `@Body()` | `pipes.Body[T](ctx)` / `BindQuery` / `BindHeader` / `BindPath` |
 | `ParseIntPipe` | `pipes.Path[int](c, "id")` — one generic, not one class per type |
-| `@ApiOperation` + Swagger | `Endpoint{Summary, Tags, Responses}` + `openapi.Mount` |
+| `@ApiOperation` + Swagger | `WithSummary/Tags/Responses/Security` options + `openapi.Mount` (+ `openapi.Lint`) |
 | Passport JWT | `auth.Service` + `AuthGuard` + `RequireRole` |
 | `bcrypt` | `auth.HashPassword` / `ComparePassword` |
 | `OnModuleInit` / `OnShutdown` | `app.OnStart` / `app.OnStop` |
 | Terminus | `HealthModule` / `HealthModuleWithChecks` |
-| Testing module | `grovtest` |
+| Testing module | `grovtest` (`RequireBody[T]`, `RequireStatus`) |
 | `HttpException` | `HttpError` (+ machine-readable `details`) |
-| `nest generate` | `grove generate` |
+| `nest generate` | `grove generate` (`module\|controller\|service\|resource`) |
+| `nest g resource` | `grove g resource users` (module + service + controller + smoke test) |
 
 ## 🚀 Quick Start
 
@@ -131,21 +133,23 @@ users := &grove.ModuleDef{
         grove.Provide0(di.Singleton, NewUsersService),
     },
     BuildControllers: func(app *grove.App) ([]grove.ControllerDef, error) {
-        svc, err := di.ResolveAs[*UsersService](app.Container)
+        ctrl, err := grove.Wire(app, NewUsersController)
         if err != nil {
             return nil, err
         }
-        h := NewUsersHandler(svc)
         return []grove.ControllerDef{{
             Prefix:     "/users",
             Tags:       []string{"users"},
             Security:   []string{"bearerAuth"},
             Middleware: []router.Middleware{guard}, // guards & interceptors
             Endpoints: []grove.Endpoint{
-                {Method: "GET", Path: "", Handler: h.List, Summary: "List users",
-                    Responses: map[int]string{200: "users"}},
-                grove.GET("/{id}", h.Get),
-                grove.POST("", h.Create, fauth.RequireRole("admin")),
+                grove.GET("", ctrl.List,
+                    grove.WithSummary("List users"),
+                    grove.WithResponses(map[int]string{200: "users"})),
+                grove.GET("/{id}", ctrl.Get, grove.WithSummary("Get user")),
+                grove.POST("", ctrl.Create,
+                    grove.Use(fauth.RequireRole("admin")),
+                    grove.WithSummary("Create user (admin)")),
             },
         }}, nil
     },
@@ -157,17 +161,17 @@ Handlers return typed errors the router maps automatically, and DTOs
 validate through pipes:
 
 ```go
-func (h *Handler) Create(c router.Context) error {
-    var in CreateUserInput // struct tags: validate:"required,email,..."
-    if err := pipes.ValidateBody(c, &in); err != nil {
+func (c *UsersController) Create(ctx router.Context) error {
+    in, err := pipes.Body[CreateUserInput](ctx) // validate:"required,email,..."
+    if err != nil {
         return err // 400 bad JSON, 422 failed validation (+ field details)
     }
-    page, err := pipes.Query(c, "page", 1) // typed ?page with default
+    page, err := pipes.Query(ctx, "page", 1) // typed ?page with default
     if err != nil {
         return err // 400
     }
     _ = page
-    return c.JSON(201, h.svc.Create(in))
+    return ctx.JSON(201, c.svc.Create(in))
 }
 ```
 
@@ -203,11 +207,10 @@ No booted servers. Drive the real app through `httptest`:
 
 ```go
 cli := grovtest.New(app).Bearer(token)
-rec := cli.Post(t, "/users", map[string]string{"name": "Ada"})
-grovtest.RequireStatus(t, rec, 201)
-body := grovtest.Decode[map[string]any](t, rec)
+body := grovtest.RequireBody[map[string]any](t,
+    cli.Post(t, "/users", map[string]string{"name": "Ada"}), 201)
 // 422s carry machine-readable details:
-rec = cli.Post(t, "/users", map[string]string{"name": "x"})
+rec := cli.Post(t, "/users", map[string]string{"name": "x"})
 grovtest.RequireStatus(t, rec, 422)
 ```
 
@@ -275,6 +278,7 @@ Examples:
 ```bash
 grove new demo --grove-version v0.2.0   # pin the framework version
 grove g module billing                  # scaffold + register in main.go
+grove g resource billing                # full slice: module + service + controller + smoke test
 grove g controller billing              # add a controller (reports wiring)
 grove g service billing                 # add a service (patches providers)
 grove version                           # CLI + Go + OS
@@ -340,8 +344,8 @@ bcrypt + refresh rotation, required/strict config, self-wiring
 `generate`, lazy OpenAPI with query/responses/bearer docs, and CI.
 
 **Phase 3** — strict provider export scoping, `go generate` compile-time
-DI wiring, declarative handler binding, config schema validation, OTel
-middleware.
+DI wiring, declarative param binding, OTel middleware.
+(Config schema via `config.Schema` and docs lint via `openapi.Lint` already shipped.)
 
 **Later** — WebSockets (`packages/ws`), gRPC (`packages/grpc`), GraphQL,
 cron jobs, queue workers, plugin system, Docker/K8s scaffolds.
