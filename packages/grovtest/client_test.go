@@ -54,6 +54,21 @@ func TestPostValidationDetailsSurvive(t *testing.T) {
 	}
 }
 
+func TestRequireBody(t *testing.T) {
+	cli := New(testApp())
+	body := RequireBody[map[string]int](t, cli.Get(t, "/users/7"), 200)
+	if body["id"] != 7 {
+		t.Fatalf("id = %v, want 7", body)
+	}
+}
+
+func TestRequireNoContent(t *testing.T) {
+	app := grove.New()
+	app.Router.DELETE("/users/7", func(c router.Context) error { return c.NoContent(204) })
+	cli := New(app)
+	RequireNoContent(t, cli.Delete(t, "/users/7"), 204)
+}
+
 func TestHeadersAndBearer(t *testing.T) {
 	app := grove.New()
 	app.Router.GET("/me", func(c router.Context) error {

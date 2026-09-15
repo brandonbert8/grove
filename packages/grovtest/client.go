@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	grove "github.com/brandonbert8/grove/packages/core"
@@ -109,5 +110,25 @@ func RequireStatus(t testing.TB, rec *httptest.ResponseRecorder, want int) {
 	t.Helper()
 	if rec.Code != want {
 		t.Fatalf("grovtest: status = %d, want %d (body %q)", rec.Code, want, rec.Body.String())
+	}
+}
+
+// RequireBody asserts the status and decodes the JSON body into T in
+// one line, the compact form of RequireStatus + Decode:
+//
+//	user := grovtest.RequireBody[User](t, cli.Get(t, "/users/1"), 200)
+func RequireBody[T any](t testing.TB, rec *httptest.ResponseRecorder, want int) T {
+	t.Helper()
+	RequireStatus(t, rec, want)
+	return Decode[T](t, rec)
+}
+
+// RequireNoContent asserts an empty-body status (201/204 Drucker-style
+// creates and deletes), failing on any response payload.
+func RequireNoContent(t testing.TB, rec *httptest.ResponseRecorder, want int) {
+	t.Helper()
+	RequireStatus(t, rec, want)
+	if strings.TrimSpace(rec.Body.String()) != "" {
+		t.Fatalf("grovtest: expected empty body for %d, got %q", want, rec.Body.String())
 	}
 }

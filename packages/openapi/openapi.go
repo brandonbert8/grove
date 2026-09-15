@@ -240,6 +240,27 @@ func Mount(app *grove.App, path string, info Info) {
 	})
 }
 
+// Lint audits the app's endpoint docs (App.Docs) and returns one
+// human-readable warning per gap, the `grove vet` equivalent for docs
+// coverage: endpoints without a Summary, and endpoints without a
+// Responses map. An empty result means every route is documented.
+//
+//	warnings := openapi.Lint(app) // []string{"GET /users: missing summary"}
+func Lint(app *grove.App) []string {
+	var out []string
+	for _, d := range app.Docs() {
+		label := strings.ToUpper(strings.TrimSpace(d.Method)) + " " + d.Path
+		if strings.TrimSpace(d.Summary) == "" {
+			out = append(out, label+": missing summary (add grove.WithSummary)")
+		}
+		if len(d.Responses) == 0 {
+			out = append(out, label+": missing responses (add grove.WithResponses)")
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // RoutePaths returns the app's mounted method+path pairs sorted —
 // handy for asserting docs coverage in tests.
 func RoutePaths(app *grove.App) []string {

@@ -29,6 +29,53 @@ func ValidateBody[T any](c router.Context, v *T) error {
 	return nil
 }
 
+// Body decodes the JSON body into a new T and validates it, returning
+// the value directly — the Go equivalent of NestJS `@Body() dto` with
+// the ValidationPipe applied:
+//
+//	in, err := pipes.Body[CreateUserInput](ctx)
+//	if err != nil {
+//	    return err // 400 bad JSON, 422 failed validation (+ field details)
+//	}
+//
+// It composes ValidateBody with value semantics so handlers stay one
+// line; prefer it over ValidateBody for new code.
+func Body[T any](c router.Context, opts ...bodyOption) (T, error) {
+	var zero T
+	v := new(T)
+	var err error
+	if bodyOpts(opts).strict {
+		err = ValidateBodyStrict(c, v)
+	} else {
+		err = ValidateBody(c, v)
+	}
+	if err != nil {
+		return zero, err
+	}
+	return *v, nil
+}
+
+// bodyOption customizes Body.
+type bodyOption func(*bodyOptions)
+
+type bodyOptions struct{ strict bool }
+
+// Strict validates with ValidateStrict: unknown rules and malformed
+// rule parameters fail the request instead of passing.
+//
+//	in, err := pipes.Body[DTO](ctx, pipes.Strict())
+func Strict() bodyOption { return func(o *bodyOptions) { o.strict = true } }
+
+func bodyOpts(opts []bodyOption) bodyOptions {
+	var o bodyOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	return o
+}
+
 // ValidateBodyStrict is ValidateBody over ValidateStrict: unknown rules
 // and malformed rule parameters fail the request instead of passing.
 // Use it when DTO tags are contracts; default to ValidateBody otherwise.
