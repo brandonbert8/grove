@@ -76,34 +76,37 @@ type createInput struct {
 	Email string `json:"email" validate:"required,email"`
 }
 
-// Handler serves the users routes.
-type Handler struct{ svc *Service }
+// Controller serves the users routes (the @Controller() equivalent).
+type Controller struct{ svc *Service }
 
-// list answers GET /users. It greets the caller from the JWT claims.
-func (h *Handler) list(c router.Context) error {
+// NewController builds the controller with constructor injection.
+func NewController(svc *Service) *Controller { return &Controller{svc: svc} }
+
+// List answers GET /users. It greets the caller from the JWT claims.
+func (c *Controller) List(ctx router.Context) error {
 	who := "anonymous"
-	if claims, ok := fauth.CurrentUser(c); ok {
+	if claims, ok := fauth.CurrentUser(ctx); ok {
 		who = claims.Subject
 	}
-	return c.JSON(200, map[string]any{"viewer": who, "users": h.svc.List()})
+	return ctx.JSON(200, map[string]any{"viewer": who, "users": c.svc.List()})
 }
 
-// get answers GET /users/{id}.
-func (h *Handler) get(c router.Context) error {
-	u, ok := h.svc.Get(c.Param("id"))
+// Get answers GET /users/{id}.
+func (c *Controller) Get(ctx router.Context) error {
+	u, ok := c.svc.Get(ctx.Param("id"))
 	if !ok {
 		return grove.NotFound("user not found")
 	}
-	return c.JSON(200, u)
+	return ctx.JSON(200, u)
 }
 
-// create answers POST /users (admin role required).
-func (h *Handler) create(c router.Context) error {
-	var in createInput
-	if err := pipes.ValidateBody(c, &in); err != nil {
+// Create answers POST /users (admin role required).
+func (c *Controller) Create(ctx router.Context) error {
+	in, err := pipes.Body[createInput](ctx)
+	if err != nil {
 		return err
 	}
-	return c.JSON(201, h.svc.Add(in.Name, in.Email))
+	return ctx.JSON(201, c.svc.Add(in.Name, in.Email))
 }
 
 // UsersModule imports auth for ordering and guards every route with JWT;
@@ -117,7 +120,7 @@ var UsersModule = &grove.ModuleDef{
 		}),
 	},
 	BuildControllers: func(app *grove.App) ([]grove.ControllerDef, error) {
-		svc, err := di.ResolveAs[*Service](app.Container)
+		ctrl, err := grove.Wire(app, NewController)
 		if err != nil {
 			return nil, err
 		}
@@ -125,20 +128,22 @@ var UsersModule = &grove.ModuleDef{
 		if err != nil {
 			return nil, err
 		}
-		h := &Handler{svc: svc}
 		return []grove.ControllerDef{{
 			Prefix:     "/users",
 			Tags:       []string{"users"},
 			Security:   []string{"bearerAuth"},
 			Middleware: []router.Middleware{guard},
 			Endpoints: []grove.Endpoint{
-				{Method: "GET", Path: "", Handler: h.list, Summary: "List users",
-					Responses: map[int]string{200: "users + viewer"}},
-				{Method: "GET", Path: "/{id}", Handler: h.get, Summary: "Get user",
-					Responses: map[int]string{200: "user", 404: "unknown id"}},
-				{Method: "POST", Path: "", Handler: h.create, Middleware: []router.Middleware{fauth.RequireRole("admin")},
-					Summary:   "Create user (admin)",
-					Responses: map[int]string{201: "created user", 401: "missing token", 403: "non-admin", 422: "invalid DTO"}},
+				grove.GET("", ctrl.List,
+					grove.WithSummary("List users"),
+					grove.WithResponses(map[int]string{200: "users + viewer"})),
+				grove.GET("/{id}", ctrl.Get,
+					grove.WithSummary("Get user"),
+					grove.WithResponses(map[int]string{200: "user", 404: "unknown id"})),
+				grove.POST("", ctrl.Create,
+					grove.Use(fauth.RequireRole("admin")),
+					grove.WithSummary("Create user (admin)"),
+					grove.WithResponses(map[int]string{201: "created user", 401: "missing token", 403: "non-admin", 422: "invalid DTO"})),
 			},
 		}}, nil
 	},

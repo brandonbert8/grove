@@ -24,17 +24,18 @@ func NewGreetingService() *GreetingService {
 // Message returns the greeting text.
 func (s *GreetingService) Message() string { return s.message }
 
-// GreetingHandler serves the hello route using the injected service.
-type GreetingHandler struct{ svc *GreetingService }
+// GreetingController serves the hello route using the injected service
+// (the @Controller() equivalent).
+type GreetingController struct{ svc *GreetingService }
 
-// NewGreetingHandler builds the handler with constructor injection.
-func NewGreetingHandler(svc *GreetingService) *GreetingHandler {
-	return &GreetingHandler{svc: svc}
+// NewGreetingController builds the controller with constructor injection.
+func NewGreetingController(svc *GreetingService) *GreetingController {
+	return &GreetingController{svc: svc}
 }
 
 // Greet answers GET /hello.
-func (h *GreetingHandler) Greet(c router.Context) error {
-	return c.JSON(200, map[string]string{"message": h.svc.Message()})
+func (c *GreetingController) Greet(ctx router.Context) error {
+	return ctx.JSON(200, map[string]string{"message": c.svc.Message()})
 }
 
 // HelloModule wires the service and route into the app.
@@ -42,13 +43,12 @@ var HelloModule = grove.NewModule("hello", func(app *grove.App) error {
 	if err := di.RegisterSingletonAs(app.Container, NewGreetingService()); err != nil {
 		return err
 	}
-	svc, err := di.ResolveAs[*GreetingService](app.Container)
+	ctrl, err := grove.Wire(app, NewGreetingController)
 	if err != nil {
 		return err
 	}
-	h := NewGreetingHandler(svc)
 	// App.Route (not raw Router) keeps the route visible to App.Docs.
-	app.Route("GET", "/hello", h.Greet)
+	app.Route("GET", "/hello", ctrl.Greet)
 	return nil
 })
 

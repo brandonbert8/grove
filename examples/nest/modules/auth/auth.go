@@ -45,16 +45,21 @@ type refreshInput struct {
 	RefreshToken string `json:"refresh_token" validate:"required"`
 }
 
-// loginHandler issues and rotates token pairs.
-type loginHandler struct {
+// Controller issues and rotates token pairs (the @Controller() equivalent).
+type Controller struct {
 	jwt   *fauth.Service
 	store *fauth.MemoryRefreshStore
 }
 
-// login validates credentials and issues an access + refresh pair.
-func (h *loginHandler) login(c router.Context) error {
-	var in loginInput
-	if err := pipes.ValidateBody(c, &in); err != nil {
+// NewController builds the auth controller with constructor injection.
+func NewController(jwt *fauth.Service, store *fauth.MemoryRefreshStore) *Controller {
+	return &Controller{jwt: jwt, store: store}
+}
+
+// Login validates credentials and issues an access + refresh pair.
+func (c *Controller) Login(ctx router.Context) error {
+	in, err := pipes.Body[loginInput](ctx)
+	if err != nil {
 		return err
 	}
 	u, ok := users[in.Username]
@@ -68,14 +73,14 @@ func (h *loginHandler) login(c router.Context) error {
 	for _, r := range u.roles {
 		roles = append(roles, r)
 	}
-	pair, err := h.jwt.IssuePair(in.Username, map[string]any{"roles": roles})
+	pair, err := c.jwt.IssuePair(in.Username, map[string]any{"roles": roles})
 	if err != nil {
 		return err
 	}
-	if err := h.store.Store(c.Request().Context(), pair.RefreshID, in.Username, time.Unix(pair.RefreshExpiresAt, 0)); err != nil {
+	if err := c.store.Store(ctx.Request().Context(), pair.RefreshID, in.Username, time.Unix(pair.RefreshExpiresAt, 0)); err != nil {
 		return err
 	}
-	return c.JSON(200, map[string]any{
+	return ctx.JSON(200, map[string]any{
 		"access_token":  pair.AccessToken,
 		"refresh_token": pair.RefreshToken,
 		"expires_in":    pair.ExpiresAt - time.Now().Unix(),
@@ -83,17 +88,17 @@ func (h *loginHandler) login(c router.Context) error {
 	})
 }
 
-// refresh redeems a single-use refresh token for the next pair.
-func (h *loginHandler) refresh(c router.Context) error {
-	var in refreshInput
-	if err := pipes.ValidateBody(c, &in); err != nil {
+// Refresh redeems a single-use refresh token for the next pair.
+func (c *Controller) Refresh(ctx router.Context) error {
+	in, err := pipes.Body[refreshInput](ctx)
+	if err != nil {
 		return err
 	}
-	pair, err := fauth.Rotate(c.Request().Context(), h.jwt, h.store, in.RefreshToken)
+	pair, err := fauth.Rotate(ctx.Request().Context(), c.jwt, c.store, in.RefreshToken)
 	if err != nil {
 		return grove.Unauthorized("invalid refresh token")
 	}
-	return c.JSON(200, map[string]any{
+	return ctx.JSON(200, map[string]any{
 		"access_token":  pair.AccessToken,
 		"refresh_token": pair.RefreshToken,
 		"expires_in":    pair.ExpiresAt - time.Now().Unix(),
@@ -122,21 +127,16 @@ var AuthModule = &grove.ModuleDef{
 		grove.Provide0(di.Singleton, fauth.NewMemoryRefreshStore),
 	},
 	BuildControllers: func(app *grove.App) ([]grove.ControllerDef, error) {
-		svc, err := di.ResolveAs[*fauth.Service](app.Container)
+		ctrl, err := grove.Wire2(app, NewController)
 		if err != nil {
 			return nil, err
 		}
-		store, err := di.ResolveAs[*fauth.MemoryRefreshStore](app.Container)
-		if err != nil {
-			return nil, err
-		}
-		h := &loginHandler{jwt: svc, store: store}
 		return []grove.ControllerDef{{
 			Prefix: "/auth",
 			Tags:   []string{"auth"},
 			Endpoints: []grove.Endpoint{
-				{Method: "POST", Path: "/login", Handler: h.login, Summary: "Issue token pair"},
-				{Method: "POST", Path: "/refresh", Handler: h.refresh, Summary: "Rotate token pair"},
+				grove.POST("/login", ctrl.Login, grove.WithSummary("Issue token pair")),
+				grove.POST("/refresh", ctrl.Refresh, grove.WithSummary("Rotate token pair")),
 			},
 		}}, nil
 	},
