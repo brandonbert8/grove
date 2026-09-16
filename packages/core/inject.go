@@ -85,3 +85,85 @@ func Wire2[T1 any, T2 any, C any](app *App, ctor func(T1, T2) C) (C, error) {
 	}
 	return ctor(d1, d2), nil
 }
+
+// Wire3 resolves three dependencies and applies ctor.
+// For 6+ dependencies prefer the `grove wire` codegen (zero ResolveAs).
+func Wire3[T1 any, T2 any, T3 any, C any](app *App, ctor func(T1, T2, T3) C) (C, error) {
+	var zero C
+	d1, err := di.ResolveAs[T1](app.Container)
+	if err != nil {
+		return zero, err
+	}
+	d2, err := di.ResolveAs[T2](app.Container)
+	if err != nil {
+		return zero, err
+	}
+	d3, err := di.ResolveAs[T3](app.Container)
+	if err != nil {
+		return zero, err
+	}
+	return ctor(d1, d2, d3), nil
+}
+
+// Wire4 resolves four dependencies and applies ctor.
+func Wire4[T1 any, T2 any, T3 any, T4 any, C any](app *App, ctor func(T1, T2, T3, T4) C) (C, error) {
+	var zero C
+	d1, err := di.ResolveAs[T1](app.Container)
+	if err != nil {
+		return zero, err
+	}
+	d2, err := di.ResolveAs[T2](app.Container)
+	if err != nil {
+		return zero, err
+	}
+	d3, err := di.ResolveAs[T3](app.Container)
+	if err != nil {
+		return zero, err
+	}
+	d4, err := di.ResolveAs[T4](app.Container)
+	if err != nil {
+		return zero, err
+	}
+	return ctor(d1, d2, d3, d4), nil
+}
+
+// MustWire is like Wire but panics on error (for BuildControllers).
+func MustWire[T any, C any](app *App, ctor func(T) C) C {
+	c, err := Wire(app, ctor)
+	if err != nil {
+		panic(err)
+	}
+	return c
+}
+
+// Controllers wires one controller and maps it to ControllerDefs in a
+// single return — the whole BuildControllers body in one expression:
+//
+//	BuildControllers: func(app *grove.App) ([]grove.ControllerDef, error) {
+//	    return grove.Controllers(app, NewUsersController, func(ctrl *UsersController) grove.ControllerDef {
+//	        return grove.ControllerDef{
+//	            Prefix: "/users",
+//	            Tags:   []string{"users"},
+//	            Endpoints: []grove.Endpoint{
+//	                grove.GET("", ctrl.List, grove.WithSummary("List users")),
+//	            },
+//	        }
+//	    })
+//	}
+func Controllers[T any, C any](app *App, ctor func(T) C, define func(C) ControllerDef) ([]ControllerDef, error) {
+	ctrl, err := Wire(app, ctor)
+	if err != nil {
+		return nil, err
+	}
+	return []ControllerDef{define(ctrl)}, nil
+}
+
+// Controllers2 is Controllers for two-dependency constructors
+// (see Wire2).
+func Controllers2[T1 any, T2 any, C any](app *App, ctor func(T1, T2) C, define func(C) ControllerDef) ([]ControllerDef, error) {
+	ctrl, err := Wire2(app, ctor)
+	if err != nil {
+		return nil, err
+	}
+	return []ControllerDef{define(ctrl)}, nil
+}

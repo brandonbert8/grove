@@ -28,6 +28,11 @@ type EndpointDoc struct {
 	Responses map[int]string
 	// Security lists required security schemes.
 	Security []string
+	// BodySchema is an optional JSON Schema for the request body
+	// (DTO → OpenAPI via openapi.SchemaFor[T]).
+	BodySchema map[string]any
+	// ResponseSchemas optionally carries per-status response schemas.
+	ResponseSchemas map[int]any
 }
 
 // Docs returns the endpoint metadata recorded during Register, in
@@ -63,6 +68,8 @@ func (a *App) RecordDocs(c ControllerDef) {
 			Query:       append([]QueryDef(nil), e.Query...),
 			Responses:   copyResponses(e.Responses),
 			Security:    mergeTags(c.Security, e.Security),
+			BodySchema:  e.BodySchema,
+			ResponseSchemas: copySchemas(e.ResponseSchemas),
 		}
 		// Last wins, like the router: re-recording a route replaces it
 		// instead of shadowing the spec with phantoms.
@@ -89,6 +96,18 @@ func copyResponses(m map[int]string) map[int]string {
 		return nil
 	}
 	out := make(map[int]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// copySchemas duplicates a response-schema map (nil stays nil).
+func copySchemas(m map[int]any) map[int]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[int]any, len(m))
 	for k, v := range m {
 		out[k] = v
 	}

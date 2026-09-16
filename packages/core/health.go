@@ -53,8 +53,9 @@ const defaultCheckTimeout = 5 * time.Second
 //	}))
 //
 // An empty path defaults to "/healthz"; a non-positive timeout means
-// the 5s default. Indicator failures report their messages; the probe
-// never leaks internals beyond that.
+// the 5s default. Indicator failures report "fail" (never raw error
+// text: DSNs and dial strings stay in logs, not in probe bodies).
+// Checks run in parallel, each bounded by the same timeout.
 func HealthModuleWithChecks(path string, timeout time.Duration, checks map[string]Check) *ModuleDef {
 	if path == "" {
 		path = "/healthz"
@@ -65,17 +66,50 @@ func HealthModuleWithChecks(path string, timeout time.Duration, checks map[strin
 	handler := func(c router.Context) error {
 		ctx, cancel := context.WithTimeout(c.Request().Context(), timeout)
 		defer cancel()
-		status := map[string]string{}
-		failed := false
+		type result struct {
+			name string
+			err  error
+		}
+		ch := make(chan result, len(checks))
+		n := 0
 		for name, check := range checks {
 			if check == nil {
 				continue
 			}
-			if err := check(ctx); err != nil {
-				status[name] = err.Error()
+			n++
+			go func(name string, check Check) {
+				// Per-check timeout so one slow dependency cannot
+				// starve the rest sharing the probe budget.
+				cctx, ccancel := context.WithTimeout(context.Background(), timeout)
+				defer ccancel()
+				ch <- result{name, check(cctx)}
+			}(name, check)
+		}
+		status := map[string]string{}
+		failed := false
+		for i := 0; i < n; i++ {
+			select {
+			case r := <-ch:
+				if r.err != nil {
+					status[r.name] = "fail"
+					failed = true
+				} else {
+					status[r.name] = "ok"
+				}
+			case <-ctx.Done():
+				// Probe budget exhausted: mark the rest unknown.
+				for name := range checks {
+					if _, ok := status[name]; !ok {
+						status[name] = "unknown"
+					}
+				}
 				failed = true
-			} else {
-				status[name] = "ok"
+				i = n // drain remaining in background; don't hang k8s
+				go func() {
+					for j := 0; j < n; j++ {
+						<-ch
+					}
+				}()
 			}
 		}
 		if failed {

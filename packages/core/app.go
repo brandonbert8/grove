@@ -2,6 +2,7 @@ package grove
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/brandonbert8/grove/packages/config"
@@ -16,6 +17,10 @@ import (
 // Container for dependency injection, Config for typed settings, and
 // Logger for structured output. Construct with New and functional
 // options, attach behavior with Register, then serve with Run.
+//
+// v0.3: use NewE/MustNew for fail-fast config, SetGlobalPrefix for
+// versioning (NestJS setGlobalPrefix), and UseFilters for @Catch-style
+// exception filters.
 type App struct {
 	// Router handles HTTP. Swap via WithRouter.
 	Router router.Router
@@ -30,6 +35,8 @@ type App struct {
 	// builtModules dedupes *ModuleDef registration so shared imports
 	// build exactly once even when imported by several modules.
 	builtModules map[*ModuleDef]bool
+	// globalModules tracks @Global modules already applied.
+	globalModules map[*ModuleDef]bool
 
 	// starts runs before listening (OnModuleInit / OnApplicationBootstrap);
 	// stops runs during shutdown in reverse order (OnApplicationShutdown).
@@ -39,6 +46,12 @@ type App struct {
 	shutdownTimeout time.Duration
 	// docs mirrors mounted endpoint metadata for docs/tooling.
 	docs []EndpointDoc
+	// globalPrefix scopes every controller route (e.g. "v1" → "/v1/...").
+	// Excluded prefixes (health, docs) bypass it.
+	globalPrefix string
+	excludedPrefixes []string
+	// filters run on handler errors, outermost-first (NestJS @Catch).
+	filters []ExceptionFilter
 }
 
 // StartFunc boots a resource (DB pool, cron, queue) before serving.
@@ -96,7 +109,76 @@ func WithShutdownTimeout(d time.Duration) Option {
 	}
 }
 
+// WithGlobalPrefix scopes every controller route (NestJS setGlobalPrefix).
+// Use WithGlobalPrefixExcluded for health/docs probes that stay unprefixed.
+func WithGlobalPrefix(prefix string, excluded ...string) Option {
+	return func(a *App) { a.SetGlobalPrefix(prefix, excluded...) }
+}
+
+// SetGlobalPrefix scopes every subsequently registered controller route.
+// An empty prefix clears versioning. Excluded prefixes bypass it exactly
+// (e.g. "/healthz", "/openapi.json").
+func (a *App) SetGlobalPrefix(prefix string, excluded ...string) {
+	p := normalizePrefix(prefix)
+	a.globalPrefix = p
+	a.excludedPrefixes = append([]string(nil), excluded...)
+}
+
+// GlobalPrefix returns the configured prefix ("" when unset).
+func (a *App) GlobalPrefix() string { return a.globalPrefix }
+
+// normalizePrefix ensures "" or "/v1" shape.
+func normalizePrefix(p string) string {
+	if p == "" || p == "/" {
+		return ""
+	}
+	if p[0] != '/' {
+		p = "/" + p
+	}
+	for len(p) > 1 && p[len(p)-1] == '/' {
+		p = p[:len(p)-1]
+	}
+	return p
+}
+
+// prefixedPath applies the global prefix unless path is excluded.
+// Exclusions match exactly or on a "/" boundary (/healthz excludes
+// /healthz and /healthz/live, never /healthz2).
+func (a *App) prefixedPath(path string) string {
+	if a.globalPrefix == "" {
+		return path
+	}
+	for _, ex := range a.excludedPrefixes {
+		if ex == "" {
+			continue
+		}
+		if path == ex || strings.HasPrefix(path, ex+"/") {
+			return path
+		}
+	}
+	if path == "" || path == "/" {
+		return a.globalPrefix
+	}
+	return a.globalPrefix + path
+}
+
+// mountController registers one ControllerDef honoring the global prefix
+// and the active exception filters.
+func (a *App) mountController(c ControllerDef) {
+	prefix := a.prefixedPath(c.Prefix)
+	g := a.Router.Group(prefix, append([]router.Middleware{a.filterMiddleware()}, c.Middleware...)...)
+	for _, e := range c.Endpoints {
+		g.Handle(e.Method, e.Path, e.Handler, e.Middleware...)
+	}
+	doc := c
+	doc.Prefix = prefix
+	a.recordDocs(doc)
+}
+
 // New builds an App with sane defaults and the given options.
+//
+// v0.2 compatibility: config load failures fall back to development
+// defaults. For fail-fast behavior use NewE/MustNew.
 func New(opts ...Option) *App {
 	cfg, err := config.Load()
 	if err != nil {
@@ -115,14 +197,58 @@ func New(opts ...Option) *App {
 	for _, opt := range opts {
 		opt(app)
 	}
+	// Wire exception filters into the router error path (best-effort:
+	// DefaultRouter exposes the hook; custom routers keep Statuser).
+	if dr, ok := app.Router.(interface{ SetErrorHandler(func(router.Context, error)) }); ok {
+		dr.SetErrorHandler(app.handleError)
+	}
+	return app
+}
+
+// NewE builds an App but returns config load failures instead of
+// silently falling back to development defaults (v0.3 fail-fast).
+func NewE(opts ...Option) (*App, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	app := &App{
+		Router:          router.New(),
+		Container:       di.New(),
+		Config:          cfg,
+		Logger:          logger.New(logger.StdOptions{Level: logger.ParseLevel(cfg.LogLevel)}),
+		shutdownTimeout: 10 * time.Second,
+	}
+	for _, opt := range opts {
+		opt(app)
+	}
+	if dr, ok := app.Router.(interface{ SetErrorHandler(func(router.Context, error)) }); ok {
+		dr.SetErrorHandler(app.handleError)
+	}
+	return app, nil
+}
+
+// MustNew is like NewE but panics on config failure. Prefer it in main.
+func MustNew(opts ...Option) *App {
+	app, err := NewE(opts...)
+	if err != nil {
+		panic(err)
+	}
 	return app
 }
 
 // Register attaches modules in order. Registration errors abort the chain.
+// Re-registering the same *ModuleDef is a no-op (shared imports build
+// once): it is skipped without duplicate logs or Modules() entries.
 func (a *App) Register(mods ...Module) error {
 	for _, m := range mods {
 		if m == nil {
 			continue
+		}
+		if ad, ok := m.(moduleDefAdapter); ok && ad.m != nil {
+			if a.builtModules != nil && a.builtModules[ad.m] {
+				continue
+			}
 		}
 		if err := m.Register(a); err != nil {
 			return err

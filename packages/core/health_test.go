@@ -37,7 +37,7 @@ func TestHealthModuleWithChecksDegraded(t *testing.T) {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
 	body := rec.Body.String()
-	if body != "{\"checks\":{\"db\":\"ok\",\"queue\":\"dial timeout\"},\"status\":\"degraded\"}\n" {
+	if body != "{\"checks\":{\"db\":\"ok\",\"queue\":\"fail\"},\"status\":\"degraded\"}\n" {
 		t.Fatalf("body = %q", body)
 	}
 }

@@ -108,6 +108,28 @@ func WithSecurity(schemes ...string) EndpointOption {
 	return func(e *Endpoint) { e.Security = append(e.Security, schemes...) }
 }
 
+// WithBodySchema attaches a request-body JSON Schema for docs
+// (the @ApiBody equivalent). Build it with openapi.SchemaFor[T]:
+//
+//	grove.POST("", h.Create, grove.WithBodySchema(openapi.SchemaFor[CreateUser]()))
+//
+// Prefer openapi.WithBody[T](): same result in one generic call.
+func WithBodySchema(schema map[string]any) EndpointOption {
+	return func(e *Endpoint) { e.BodySchema = schema }
+}
+
+// WithResponseSchema attaches a per-status response JSON Schema for
+// docs. Prefer openapi.WithResponse[T](code, desc): it sets both the
+// description and the schema from the DTO type.
+func WithResponseSchema(code int, schema map[string]any) EndpointOption {
+	return func(e *Endpoint) {
+		if e.ResponseSchemas == nil {
+			e.ResponseSchemas = map[int]any{}
+		}
+		e.ResponseSchemas[code] = schema
+	}
+}
+
 // buildEndpoint assembles an Endpoint from mixed route options. Accepted
 // option types:
 //
@@ -144,7 +166,7 @@ func buildEndpoint(method, path string, h router.HandlerFunc, opts []any) Endpoi
 				e.Middleware = append(e.Middleware, UseGuard(o))
 			}
 		default:
-			panic(fmt.Sprintf("grove: invalid endpoint option %T for %s %s: want router.Middleware, grove.EndpointOption, or grove.CanActivate", opt, method, path))
+			panic(fmt.Sprintf("grove: invalid endpoint option %T for %s %s: want router.Middleware, grove.EndpointOption (e.g. grove.WithSummary(\"...\"), grove.Use(guard)), or grove.CanActivate", opt, method, path))
 		}
 	}
 	return e

@@ -98,22 +98,9 @@ func Load(opts ...Option) (*Config, error) {
 		opt(o)
 	}
 
-	merged := map[string]string{}
-	if o.envPath != "" {
-		fileVars, err := parseDotEnvFile(o.envPath)
-		if err != nil {
-			return nil, err
-		}
-		for k, v := range fileVars {
-			merged[k] = v
-		}
-	}
-	for _, kv := range os.Environ() {
-		name, value, _ := strings.Cut(kv, "=")
-		merged[name] = value
-	}
-	for k, v := range o.over {
-		merged[strings.ToUpper(k)] = v
+	merged, err := mergedEnv(o)
+	if err != nil {
+		return nil, err
 	}
 
 	cfg := defaults()
@@ -236,9 +223,40 @@ func (c Config) IsDevelopment() bool { return c.Env == "development" }
 // IsTest reports Env == "test".
 func (c Config) IsTest() bool { return c.Env == "test" }
 
+// mergedEnv resolves .env + process env + overrides into one map.
+// Precedence (later wins): .env file, process environment, overrides.
+func mergedEnv(o *options) (map[string]string, error) {
+	merged := map[string]string{}
+	if o.envPath != "" {
+		fileVars, err := parseDotEnvFile(o.envPath)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range fileVars {
+			merged[k] = v
+		}
+	}
+	for _, kv := range os.Environ() {
+		name, value, _ := strings.Cut(kv, "=")
+		merged[name] = value
+	}
+	for k, v := range o.over {
+		merged[strings.ToUpper(k)] = v
+	}
+	return merged, nil
+}
+
+// Merged returns the merged environment view used by Load (for Get and
+// custom keys): .env + process env + overrides, with the same opts.
+func Merged(opts ...Option) (map[string]string, error) {
+	o := &options{envPath: findDotEnv()}
+	for _, opt := range opts {
+		opt(o)
+	}
+	return mergedEnv(o)
+}
 // lookup returns the first non-empty value for any of the names.
-func lookup(vars map[string]string, names ...string) (string, bool) {
-	for _, n := range names {
+func lookup(vars map[string]string, names ...string) (string, bool) {	for _, n := range names {
 		if v, ok := vars[n]; ok && strings.TrimSpace(v) != "" {
 			return strings.TrimSpace(v), true
 		}
@@ -246,13 +264,16 @@ func lookup(vars map[string]string, names ...string) (string, bool) {
 	return "", false
 }
 
-// findDotEnv searches the current directory and its parents for ".env".
+// findDotEnv searches the current directory and its parents for ".env",
+// up to 8 levels (never the filesystem root in prod containers), so
+// tests and nested commands work regardless of invocation directory
+// without picking up a stray /.env.
 func findDotEnv() string {
 	dir, err := os.Getwd()
 	if err != nil {
 		return ""
 	}
-	for {
+	for i := 0; i < 8; i++ {
 		candidate := filepath.Join(dir, ".env")
 		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
 			return candidate
@@ -263,6 +284,7 @@ func findDotEnv() string {
 		}
 		dir = parent
 	}
+	return ""
 }
 
 // parseDotEnvFile parses a simple .env file: KEY=VALUE lines with support

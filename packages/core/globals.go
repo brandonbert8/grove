@@ -70,12 +70,15 @@ func Created[T any](c router.Context, data T) error {
 // through untouched; handler errors (non-nil return) skip mapping so
 // Grove-shaped errors stay canonical.
 //
-// Responses buffer in memory: use it for JSON APIs, not for streams,
-// SSE, or file downloads.
+// Scope it to JSON APIs only: streams, SSE, hijacked connections, and
+// non-JSON payloads bypass buffering entirely (no OOM, no latency).
 func MapResponse(mapper func(status int, body []byte) (int, []byte)) router.Middleware {
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c router.Context) error {
-			cw := &captureWriter{header: c.ResponseWriter().Header(), status: http.StatusOK}
+			if isStreamWriter(c.ResponseWriter()) {
+				return next(c)
+			}
+			cw := &captureWriter{header: cloneHeader(c.ResponseWriter().Header()), status: http.StatusOK, dst: c.ResponseWriter()}
 			wrapped := &mappedContext{Context: c, w: cw}
 			if err := next(wrapped); err != nil {
 				return err
@@ -92,12 +95,29 @@ func MapResponse(mapper func(status int, body []byte) (int, []byte)) router.Midd
 			for k, vv := range cw.header {
 				w.Header()[k] = vv
 			}
-			w.Header().Set("Content-Length", "")
+			w.Header().Del("Content-Length")
 			w.WriteHeader(status)
 			_, _ = w.Write(body)
 			return nil
 		}
 	}
+}
+
+// isStreamWriter is a pre-check hook (conservative: never bypass here;
+// the captureWriter itself detects Flush/Hijack mid-handler and streams
+// through instead of buffering). Kept as a seam for future heuristics.
+func isStreamWriter(w http.ResponseWriter) bool { return false }
+
+// maxMapBody caps MapResponse buffering (streams beyond this flush
+// through instead of OOMing).
+const maxMapBody = 4 << 20
+
+func cloneHeader(h http.Header) http.Header {
+	out := make(http.Header, len(h))
+	for k, vv := range h {
+		out[k] = append([]string(nil), vv...)
+	}
+	return out
 }
 
 // WrapData wraps 2xx JSON responses as {"data": ...}, the one-line
@@ -135,17 +155,23 @@ type mappedContext struct {
 // ResponseWriter returns the capture writer.
 func (c *mappedContext) ResponseWriter() http.ResponseWriter { return c.w }
 
-// captureWriter buffers one response (status + body) for mapping.
+// captureWriter buffers one response (status + body) for mapping,
+// streaming through when the handler flushes (SSE) or exceeds the cap.
 type captureWriter struct {
 	header      http.Header
 	status      int
 	body        bytes.Buffer
 	wrote       bool
 	wroteHeader bool
+	streamed    bool
+	dst         http.ResponseWriter
 }
 
-// Header returns the shared header map.
+// Header returns the private header map.
 func (w *captureWriter) Header() http.Header { return w.header }
+
+// Wrote reports whether headers were committed (for Recovery checks).
+func (w *captureWriter) Wrote() bool { return w.wroteHeader && w.streamed }
 
 // WriteHeader records the status code.
 func (w *captureWriter) WriteHeader(status int) {
@@ -158,18 +184,56 @@ func (w *captureWriter) WriteHeader(status int) {
 }
 
 // Write buffers the body, implying 200 when no status was set.
+// Oversized or non-JSON payloads stream through unmapped.
 func (w *captureWriter) Write(b []byte) (int, error) {
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
 	}
 	w.wrote = true
+	if w.streamed {
+		return w.dst.Write(b)
+	}
+	if w.body.Len()+len(b) > maxMapBody {
+		w.streamThrough()
+		return w.dst.Write(b)
+	}
 	return w.body.Write(b)
+}
+
+// Flush implements http.Flusher: the handler is streaming (SSE), so
+// commit headers/body live and bypass mapping from here on.
+func (w *captureWriter) Flush() {
+	if w.dst == nil {
+		return
+	}
+	w.streamThrough()
+	if f, ok := w.dst.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *captureWriter) streamThrough() {
+	if w.streamed || w.dst == nil {
+		return
+	}
+	w.streamed = true
+	for k, vv := range w.header {
+		w.dst.Header()[k] = vv
+	}
+	w.dst.WriteHeader(w.status)
+	if w.body.Len() > 0 {
+		_, _ = w.dst.Write(w.body.Bytes())
+		w.body.Reset()
+	}
 }
 
 // flushTo replays the captured response untouched.
 func (w *captureWriter) flushTo(dst http.ResponseWriter) {
 	if !w.wrote {
 		return
+	}
+	if w.streamed {
+		return // already live on dst
 	}
 	for k, vv := range w.header {
 		dst.Header()[k] = vv

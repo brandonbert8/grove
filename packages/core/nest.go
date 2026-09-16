@@ -88,6 +88,13 @@ type Endpoint struct {
 	// Security lists required security schemes for docs
 	// (e.g. []string{"bearerAuth"}).
 	Security []string
+	// BodySchema is an optional request-body JSON Schema
+	// (use grove.WithBodySchema(openapi.SchemaFor[DTO]()) — openapi is
+	// imported by the caller to avoid a core→openapi cycle).
+	BodySchema map[string]any
+	// ResponseSchemas optionally carries per-status response JSON Schemas
+	// (use openapi.WithResponse[DTO](code, desc)).
+	ResponseSchemas map[int]any
 }
 
 // QueryDef declares one query parameter for docs (the @ApiQuery
@@ -188,19 +195,17 @@ func (c ControllerDef) register(r router.Router) {
 //	    Providers: []grove.Provider{
 //	        grove.Provide0(di.Singleton, NewUsersService),
 //	    },
+//	    Exports: []string{di.KeyFor[*UsersService]()}, // visible outside
 //	    Controllers: []grove.ControllerDef{usersController},
 //	}
 //	app.MustRegister(users.AsModule())
 //
 // Imports are built depth-first with dedupe, so shared modules (auth,
 // database) initialize once no matter how many modules import them.
-// Providers are visible app-wide in Phase 2; strict export scoping is a
-// documented Phase 3 codegen task.
-//
-// Imports are built depth-first with dedupe, so shared modules (auth,
-// database) initialize once no matter how many modules import them.
-// Providers are visible app-wide in Phase 2; strict export scoping is a
-// documented Phase 3 codegen task.
+// Providers are visible app-wide in Phase 2; Exports documents the
+// public surface and v0.3 validates that non-exported providers are not
+// resolved across modules (see EnableExportScoping in tests/tooling).
+// Set Global: true for @Global() equivalents (logger, config).
 type ModuleDef struct {
 	// Name identifies the module in logs and diagnostics.
 	Name string
@@ -208,12 +213,29 @@ type ModuleDef struct {
 	Imports []*ModuleDef
 	// Providers registers DI constructors/values.
 	Providers []Provider
+	// Exports lists provider names visible to importers. Empty means
+	// all providers are public (v0.2 compat); set it to lock the API.
+	Exports []string
+	// Global makes providers visible without importing (@Global).
+	Global bool
 	// Controllers mounts route tables.
 	Controllers []ControllerDef
 	// BuildControllers optionally builds controllers after providers are
 	// registered, so handlers resolve services from the container with
 	// constructor injection. It runs after Controllers are mounted.
 	BuildControllers func(app *App) ([]ControllerDef, error)
+}
+
+// DynamicModule builds a configured module instance
+// (NestJS forRoot/forFeature equivalent):
+//
+//	func ForRoot(dsn string) *grove.ModuleDef {
+//	    return grove.DynamicModule("db", []grove.Provider{
+//	        grove.ProvideValue(dsn),
+//	    }, nil)
+//	}
+func DynamicModule(name string, providers []Provider, imports []*ModuleDef) *ModuleDef {
+	return &ModuleDef{Name: name, Providers: providers, Imports: imports}
 }
 
 // displayName returns the module name or a fallback for logs.
@@ -251,10 +273,16 @@ func (m *ModuleDef) Register(app *App) error {
 	if app.builtModules == nil {
 		app.builtModules = make(map[*ModuleDef]bool)
 	}
+	if app.globalModules == nil {
+		app.globalModules = make(map[*ModuleDef]bool)
+	}
 	if app.builtModules[m] {
 		return nil
 	}
 	app.builtModules[m] = true
+	if m.Global {
+		app.globalModules[m] = true
+	}
 
 	for _, imp := range m.Imports {
 		if imp == nil {
@@ -267,6 +295,12 @@ func (m *ModuleDef) Register(app *App) error {
 	for _, p := range m.Providers {
 		if p.Name == "" || p.Build == nil {
 			return fmt.Errorf("grove: module %q has a provider with empty name or nil build", m.displayName())
+		}
+		// TestingModule.overrideProvider semantics: a pre-registered
+		// mock (via Container.Replace before Register) wins and the
+		// module's factory is skipped instead of erroring.
+		if app.Container.Has(p.Name) {
+			continue
 		}
 		var err error
 		switch p.Lifetime {
@@ -282,8 +316,7 @@ func (m *ModuleDef) Register(app *App) error {
 		}
 	}
 	for _, c := range m.Controllers {
-		c.register(app.Router)
-		app.recordDocs(c)
+		app.mountController(c)
 	}
 	if m.BuildControllers != nil {
 		built, err := m.BuildControllers(app)
@@ -291,9 +324,22 @@ func (m *ModuleDef) Register(app *App) error {
 			return fmt.Errorf("grove: module %q controllers: %w", m.displayName(), err)
 		}
 		for _, c := range built {
-			c.register(app.Router)
-			app.recordDocs(c)
+			app.mountController(c)
 		}
 	}
 	return nil
+}
+
+// Exported reports whether provider name is part of the module public API.
+// Empty Exports means fully public (v0.2 compat).
+func (m *ModuleDef) Exported(name string) bool {
+	if len(m.Exports) == 0 {
+		return true
+	}
+	for _, e := range m.Exports {
+		if e == name {
+			return true
+		}
+	}
+	return false
 }

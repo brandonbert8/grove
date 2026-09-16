@@ -1,112 +1,58 @@
 package grove
 
 import (
-	"errors"
-	"net/http"
+	"github.com/brandonbert8/grove/packages/httperr"
 )
 
-// HttpError is Grove's typed HTTP exception, the Go equivalent of a
-// NestJS HttpException. Handlers and pipes return it; the router maps it
-// to its status code automatically (see router.Statuser), so no explicit
-// exception-filter middleware is required for the common cases.
-type HttpError struct {
-	// Status is the HTTP status code (400-599).
-	Status int
-	// Message is the human-readable reason, exposed in the JSON body.
-	Message string
-	// Details optionally carries machine-readable context (e.g.
-	// validation failures). It is exposed in the JSON body when set.
-	Details any
-}
-
-// Error implements error.
-func (e *HttpError) Error() string {
-	if e.Message != "" {
-		return e.Message
-	}
-	return http.StatusText(e.Status)
-}
-
-// StatusCode implements router.Statuser.
-func (e *HttpError) StatusCode() int { return e.Status }
+// HttpError is Grove's typed HTTP exception (alias of httperr.HttpError).
+//
+// v0.3: the canonical type lives in the leaf package
+// packages/httperr so pipes/auth/router never import core.
+// This alias keeps existing handlers compiling.
+type HttpError = httperr.HttpError
 
 // NewHttpError builds an HttpError with an optional details payload.
 func NewHttpError(status int, message string, details ...any) *HttpError {
-	e := &HttpError{Status: status, Message: message}
-	if len(details) > 0 {
-		e.Details = details[0]
-	}
-	return e
+	return httperr.New(status, message, details...)
 }
 
 // BadRequest builds a 400 error.
 func BadRequest(msg string, details ...any) *HttpError {
-	return NewHttpError(http.StatusBadRequest, msg, details...)
+	return httperr.BadRequest(msg, details...)
 }
 
 // Unauthorized builds a 401 error.
 func Unauthorized(msg string, details ...any) *HttpError {
-	if msg == "" {
-		msg = "unauthorized"
-	}
-	return NewHttpError(http.StatusUnauthorized, msg, details...)
+	return httperr.Unauthorized(msg, details...)
 }
 
 // Forbidden builds a 403 error.
 func Forbidden(msg string, details ...any) *HttpError {
-	if msg == "" {
-		msg = "forbidden"
-	}
-	return NewHttpError(http.StatusForbidden, msg, details...)
+	return httperr.Forbidden(msg, details...)
 }
 
 // NotFound builds a 404 error.
 func NotFound(msg string, details ...any) *HttpError {
-	if msg == "" {
-		msg = "not found"
-	}
-	return NewHttpError(http.StatusNotFound, msg, details...)
+	return httperr.NotFound(msg, details...)
 }
 
 // Conflict builds a 409 error.
 func Conflict(msg string, details ...any) *HttpError {
-	return NewHttpError(http.StatusConflict, msg, details...)
+	return httperr.Conflict(msg, details...)
 }
 
 // Unprocessable builds a 422 error, used for validation failures.
 func Unprocessable(msg string, details ...any) *HttpError {
-	if msg == "" {
-		msg = "validation failed"
-	}
-	return NewHttpError(http.StatusUnprocessableEntity, msg, details...)
+	return httperr.Unprocessable(msg, details...)
 }
 
 // Internal builds a 500 error. Prefer letting unexpected failures fall
 // through as plain errors; the router already maps those to 500.
 func Internal(msg string, details ...any) *HttpError {
-	if msg == "" {
-		msg = "internal server error"
-	}
-	return NewHttpError(http.StatusInternalServerError, msg, details...)
+	return httperr.Internal(msg, details...)
 }
 
-// ErrorDetails returns the machine-readable Details payload, if any.
-//
-// It backs router's structural detailer contract so validation
-// failures (and other rich errors) survive the trip to the client as
-// {"error","status","details"} without core↔router imports cycling.
-func (e *HttpError) ErrorDetails() any {
-	if e == nil {
-		return nil
-	}
-	return e.Details
-}
+// ErrorDetails is inherited from httperr.HttpError; see that package.
 
 // AsHttpError unwraps err to an *HttpError when possible.
-func AsHttpError(err error) (*HttpError, bool) {
-	var he *HttpError
-	if errors.As(err, &he) {
-		return he, true
-	}
-	return nil, false
-}
+func AsHttpError(err error) (*HttpError, bool) { return httperr.As(err) }
