@@ -2,6 +2,7 @@ package openapi
 
 import (
 	"encoding/json"
+	"html/template"
 	"net/http"
 	"sort"
 	"strconv"
@@ -31,7 +32,29 @@ type Parameter struct {
 
 // Response is one entry of an operation's responses.
 type Response struct {
-	Description string `json:"description"`
+	Description string         `json:"description"`
+	Content     map[string]any `json:"content,omitempty"`
+}
+
+// WithBody attaches the request-body JSON Schema derived from DTO type
+// T (the @ApiBody(type) equivalent) in one generic call:
+//
+//	grove.POST("", grove.HandleBody(svc.Create, 201),
+//	    grove.WithSummary("Create user"),
+//	    openapi.WithBody[CreateUser](),
+//	    openapi.WithResponse[User](201, "created user"))
+func WithBody[T any]() grove.EndpointOption {
+	return grove.WithBodySchema(map[string]any(SchemaFor[T]()))
+}
+
+// WithResponse sets the response description for code and attaches the
+// response JSON Schema derived from DTO type T (the @ApiResponse(type)
+// equivalent).
+func WithResponse[T any](code int, desc string) grove.EndpointOption {
+	return func(e *grove.Endpoint) {
+		grove.WithResponses(map[int]string{code: desc})(e)
+		grove.WithResponseSchema(code, map[string]any(SchemaFor[T]()))(e)
+	}
 }
 
 // Operation is one method+path entry.
@@ -42,6 +65,7 @@ type Operation struct {
 	Tags        []string              `json:"tags,omitempty"`
 	Deprecated  bool                  `json:"deprecated,omitempty"`
 	Parameters  []Parameter           `json:"parameters,omitempty"`
+	RequestBody map[string]any        `json:"requestBody,omitempty"`
 	Responses   map[string]Response   `json:"responses"`
 	Security    []map[string][]string `json:"security,omitempty"`
 }
@@ -65,7 +89,7 @@ type Spec struct {
 	OpenAPI    string                               `json:"openapi"`
 	Info       Info                                 `json:"info"`
 	Paths      map[string]map[string]Operation      `json:"paths"`
-	Components map[string]map[string]SecurityScheme `json:"components,omitempty"`
+	Components map[string]any                       `json:"components,omitempty"`
 }
 
 // Build renders the app's documented routes (App.Docs, recorded at
@@ -101,7 +125,19 @@ func Build(app *grove.App, info Info) Spec {
 			if code != 0 {
 				key = strconv.Itoa(code)
 			}
-			responses[key] = Response{Description: text}
+			resp := Response{Description: text}
+			if schema, ok := d.ResponseSchemas[code].(map[string]any); ok && len(schema) > 0 {
+				refName := operationID(d.Method, d.Path) + "Resp" + key
+				ensureSchemas(&s)
+				schemas, _ := s.Components["schemas"].(map[string]any)
+				schemas[refName] = schema
+				resp.Content = map[string]any{
+					"application/json": map[string]any{
+						"schema": map[string]any{"$ref": "#/components/schemas/" + refName},
+					},
+				}
+			}
+			responses[key] = resp
 		}
 		var security []map[string][]string
 		for _, name := range d.Security {
@@ -111,13 +147,40 @@ func Build(app *grove.App, info Info) Spec {
 			security = append(security, map[string][]string{name: {}})
 			if scheme, ok := knownSchemes[name]; ok {
 				if s.Components == nil {
-					s.Components = map[string]map[string]SecurityScheme{}
+					s.Components = map[string]any{}
 				}
-				if s.Components["securitySchemes"] == nil {
-					s.Components["securitySchemes"] = map[string]SecurityScheme{}
+				schemes, _ := s.Components["securitySchemes"].(map[string]any)
+				if schemes == nil {
+					schemes = map[string]any{}
+					s.Components["securitySchemes"] = schemes
 				}
-				s.Components["securitySchemes"][name] = scheme
+				schemes[name] = scheme
 			}
+		}
+		if len(d.BodySchema) > 0 {
+			ensureSchemas(&s)
+			schemas, _ := s.Components["schemas"].(map[string]any)
+			refName := operationID(d.Method, d.Path) + "Body"
+			schemas[refName] = d.BodySchema
+			item[method] = Operation{
+				OperationID: operationID(d.Method, d.Path),
+				Summary:     d.Summary,
+				Description: d.Description,
+				Tags:        d.Tags,
+				Deprecated:  d.Deprecated,
+				Parameters:  append(pathParams(d.Path), queryParams(d.Query)...),
+				RequestBody: map[string]any{
+					"required": true,
+					"content": map[string]any{
+						"application/json": map[string]any{
+							"schema": map[string]any{"$ref": "#/components/schemas/" + refName},
+						},
+					},
+				},
+				Responses: responses,
+				Security:  security,
+			}
+			continue
 		}
 		item[method] = Operation{
 			OperationID: operationID(d.Method, d.Path),
@@ -131,6 +194,16 @@ func Build(app *grove.App, info Info) Spec {
 		}
 	}
 	return s
+}
+
+// ensureSchemas initializes components.schemas for $ref targets.
+func ensureSchemas(s *Spec) {
+	if s.Components == nil {
+		s.Components = map[string]any{}
+	}
+	if _, ok := s.Components["schemas"].(map[string]any); !ok {
+		s.Components["schemas"] = map[string]any{}
+	}
 }
 
 // operationID renders e.g. GET /users/{id} as get_users_id. A catch-all
@@ -221,23 +294,30 @@ func (s Spec) Handler() http.Handler {
 // Mount(app, "/openapi.json", Info{...})), the one-line
 // SwaggerModule.setup equivalent. The spec builds per request from
 // App.Docs, so routes registered after Mount still appear; Mount
-// documents itself under the ops tag.
+// documents itself under the ops tag. The path honors the app's global
+// prefix like any other route.
 func Mount(app *grove.App, path string, info Info) {
-	app.Router.Handle("GET", path, func(c router.Context) error {
+	app.RouteDoc("GET", path, func(c router.Context) error {
 		Build(app, info).Handler().ServeHTTP(c.ResponseWriter(), c.Request())
 		return nil
-	})
-	app.RecordDocs(grove.ControllerDef{
-		Prefix: path,
-		Tags:   []string{"ops"},
-		Endpoints: []grove.Endpoint{{
-			Method:  "GET",
-			Path:    "",
-			Handler: func(c router.Context) error { return c.NoContent(200) },
-			Summary: "OpenAPI spec",
-			Tags:    []string{"ops"},
-		}},
-	})
+	}, grove.WithSummary("OpenAPI spec"), grove.WithTags("ops"))
+}
+
+// MountDocs serves a minimal Swagger UI at docsPath backed by specPath
+// (the @nestjs/swagger setup equivalent without extra dependencies).
+// specPath is HTML-escaped into the bundle config (no XSS via quotes).
+func MountDocs(app *grove.App, docsPath, specPath string, info Info) {
+	Mount(app, specPath, info)
+	specJS := template.JSEscapeString(specPath)
+	app.RouteDoc("GET", docsPath, func(c router.Context) error {
+		w := c.ResponseWriter()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!doctype html><html><head><title>Grove API</title>` +
+			`<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css"></head><body>` +
+			`<div id="ui"></div><script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>` +
+			`<script>SwaggerUIBundle({url:"` + specJS + `",dom_id:"#ui"})</script></body></html>`))
+		return nil
+	}, grove.WithSummary("API docs"), grove.WithTags("ops"))
 }
 
 // Lint audits the app's endpoint docs (App.Docs) and returns one
