@@ -3,6 +3,7 @@ package router
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	chi "github.com/go-chi/chi/v5"
@@ -37,10 +38,17 @@ type Context interface {
 	// Header returns the first value of request header name.
 	Header(name string) string
 
+	// Cookie returns the named request cookie or an error.
+	Cookie(name string) (*http.Cookie, error)
+	// SetCookie writes a Set-Cookie header.
+	SetCookie(c *http.Cookie)
+
 	// Body decodes the JSON request body into v. It caps the read at
 	// 1 MiB and rejects empty bodies; validation belongs in a pipe
 	// (see packages/pipes), not here.
 	Body(v any) error
+	// BodyWithLimit is Body with a custom byte cap.
+	BodyWithLimit(v any, limit int64) error
 
 	// Status stashes the status code; the next JSON/String/NoContent
 	// call writes it (a single WriteHeader per response).
@@ -51,6 +59,8 @@ type Context interface {
 	String(code int, s string) error
 	// NoContent writes a status code with an empty body.
 	NoContent(code int) error
+	// Redirect issues a Location redirect.
+	Redirect(code int, url string) error
 }
 
 // httpContext is the default Context implementation.
@@ -71,6 +81,14 @@ func NewContext(w http.ResponseWriter, r *http.Request) Context {
 // Request returns the incoming HTTP request.
 func (c *httpContext) Request() *http.Request { return c.r }
 
+// SetRequest swaps the underlying request (used by guards to attach
+// auth context without mutating a shared *http.Request in place).
+func (c *httpContext) SetRequest(r *http.Request) {
+	if r != nil {
+		c.r = r
+	}
+}
+
 // ResponseWriter returns the underlying writer.
 func (c *httpContext) ResponseWriter() http.ResponseWriter { return c.w }
 
@@ -90,30 +108,56 @@ func (c *httpContext) Param(name string) string {
 func (c *httpContext) Query(name string) string { return c.r.URL.Query().Get(name) }
 
 // QueryOr returns the query value or fallback when absent.
+// Presence is exact: ?q= is present-but-empty (returns ""), only a
+// missing key falls back — so empty searches don't silently become defaults.
 func (c *httpContext) QueryOr(name, fallback string) string {
-	if v := c.r.URL.Query().Get(name); v != "" {
-		return v
+	if !c.r.URL.Query().Has(name) {
+		return fallback
 	}
-	return fallback
+	return c.r.URL.Query().Get(name)
 }
 
 // Header returns the first value of request header name.
 func (c *httpContext) Header(name string) string { return c.r.Header.Get(name) }
 
+// Cookie returns the named request cookie.
+func (c *httpContext) Cookie(name string) (*http.Cookie, error) { return c.r.Cookie(name) }
+
+// SetCookie writes a Set-Cookie header.
+func (c *httpContext) SetCookie(cookie *http.Cookie) {
+	if cookie != nil {
+		http.SetCookie(c.w, cookie)
+	}
+}
+
 // maxBodyBytes caps JSON body reads to prevent abuse.
 const maxBodyBytes = 1 << 20
 
+// DefaultMaxBody exposes the default JSON cap for pipes/config.
+const DefaultMaxBody = int64(maxBodyBytes)
+
 // Body decodes the JSON request body into v.
-func (c *httpContext) Body(v any) error {
+func (c *httpContext) Body(v any) error { return c.BodyWithLimit(v, maxBodyBytes) }
+
+// BodyWithLimit is Body with a custom byte cap.
+func (c *httpContext) BodyWithLimit(v any, limit int64) error {
 	if v == nil {
 		return errNilBodyTarget
 	}
 	if c.r.Body == nil {
 		return errEmptyBody
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(c.w, c.r.Body, maxBodyBytes))
+	if limit <= 0 {
+		limit = maxBodyBytes
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(c.w, c.r.Body, limit))
 	if err := dec.Decode(v); err != nil {
 		return err
+	}
+	// Reject trailing garbage: {"a":1} garbage / {} {} must fail
+	// instead of silently validating only the first value.
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("router: unexpected data after JSON body")
 	}
 	return nil
 }
@@ -159,5 +203,14 @@ func (c *httpContext) NoContent(code int) error {
 	code = c.resolveStatus(code)
 	c.statusSet = false
 	c.w.WriteHeader(code)
+	return nil
+}
+
+// Redirect issues a Location redirect.
+func (c *httpContext) Redirect(code int, url string) error {
+	if code < 300 || code > 308 {
+		code = http.StatusFound
+	}
+	http.Redirect(c.w, c.r, url, code)
 	return nil
 }

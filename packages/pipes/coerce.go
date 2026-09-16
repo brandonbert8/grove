@@ -11,6 +11,9 @@ import (
 // Value is the set of scalar kinds coercible from path/query strings —
 // the ParseIntPipe/ParseBoolPipe/ParseUUIDPipe equivalent, but generic:
 // one function instead of one pipe per type.
+//
+// Bool parsing follows strconv.ParseBool (1,t,T,TRUE,true,True,0,f,F,
+// FALSE,false,False); prefer explicit "true"/"false" in your API docs.
 type Value interface {
 	~string | ~bool |
 		~int | ~int8 | ~int16 | ~int32 | ~int64 |
@@ -50,14 +53,15 @@ func Path[T Value](c router.Context, name string) (T, error) {
 
 // Query reads query parameter name with a DefaultValuePipe-style
 // fallback: absent means fallback (no error); present-but-malformed is
-// a 400 *grove.HttpError:
+// a 400 *grove.HttpError. Presence is exact (?limit= is present-but-empty
+// and fails for numeric targets instead of silently using the fallback).
 //
 //	limit, err := pipes.Query(c, "limit", 20)
 func Query[T Value](c router.Context, name string, fallback T) (T, error) {
-	raw := c.Query(name)
-	if raw == "" {
+	if !c.Request().URL.Query().Has(name) {
 		return fallback, nil
 	}
+	raw := c.Query(name)
 	v, err := Parse[T](raw)
 	if err != nil {
 		var zero T

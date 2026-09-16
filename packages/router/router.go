@@ -15,7 +15,12 @@ type RouteInfo struct {
 	Method  string
 	Path    string
 	Handler HandlerFunc
+	// autoHead marks GET-mirrored HEAD routes (not explicit HEAD).
+	autoHead bool
 }
+
+// AutoHead reports whether the route is a GET-mirrored HEAD entry.
+func (r RouteInfo) AutoHead() bool { return r.autoHead }
 
 // Router is Grove's HTTP routing abstraction.
 //

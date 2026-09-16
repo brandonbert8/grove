@@ -35,17 +35,19 @@ _Composition over magic · compile-time over reflection · clear boundaries from
 | `@Injectable()` + constructor DI | `Provide` / `Provide0` + `grove.Inject[T]` / `grove.Wire(app, NewXxxController)` |
 | `@UseGuards()` / `APP_GUARD` | `UseGuard()` / per-controller `Middleware` / `app.UseGuards()` |
 | `@UseInterceptors()` / `APP_INTERCEPTOR` | `app.UseInterceptors()` + `grove.WrapData()` / `MapResponse()` |
-| `ValidationPipe` + `@Body()` | `pipes.Body[T](ctx)` / `BindQuery` / `BindHeader` / `BindPath` |
+| `ValidationPipe` + `@Body()` | `grove.HandleBody(fn, 201)` (decode + strict-validate) or `pipes.Body[T](ctx)` / `BindQuery` / `BindHeader` / `BindPath` |
 | `ParseIntPipe` | `pipes.Path[int](c, "id")` — one generic, not one class per type |
-| `@ApiOperation` + Swagger | `WithSummary/Tags/Responses/Security` options + `openapi.Mount` (+ `openapi.Lint`) |
+| `@ApiOperation` + Swagger | `WithSummary/Tags/Responses/Security` options + `openapi.WithBody[DTO]()` / `WithResponse[DTO]()` + `openapi.Mount` (+ `openapi.Lint`) |
 | Passport JWT | `auth.Service` + `AuthGuard` + `RequireRole` |
 | `bcrypt` | `auth.HashPassword` / `ComparePassword` |
 | `OnModuleInit` / `OnShutdown` | `app.OnStart` / `app.OnStop` |
 | Terminus | `HealthModule` / `HealthModuleWithChecks` |
-| Testing module | `grovtest` (`RequireBody[T]`, `RequireStatus`) |
+| Testing module | `grovtest.TestingModule(t, Mod, Override[S](mock))` (`RequireBody[T]`, `RequireStatus`, `RequireValidationError`) |
 | `HttpException` | `HttpError` (+ machine-readable `details`) |
-| `nest generate` | `grove generate` (`module\|controller\|service\|resource`) |
+| `nest generate` | `grove generate` (`module\|controller\|service\|resource\|guard\|pipe\|filter\|interceptor`) |
 | `nest g resource` | `grove g resource users` (module + service + controller + smoke test) |
+| `NestFactory` + `app.listen` | `grove.New()` + `middleware.DefaultChain(app.Logger)` + `app.Listen()` |
+| `nest start --watch` | `grove dev` (stdlib polling) / `grove start` / `grove test` / `grove build` |
 
 ## 🚀 Quick Start
 
@@ -263,9 +265,15 @@ Usage:
   grove [command]
 
 Commands:
+  build       Vet, test and compile the project
+  dev         Run with restart on file changes
   generate    Generate a Grove component
+  lint        Audit docs coverage and configuration
   new         Create a new Grove application
+  start       Run the application
+  test        Run the project tests
   version     Print the Grove CLI version
+  wire        Count DI providers (wiring smoke check)
 
 Aliases:
   generate, g
@@ -281,6 +289,12 @@ grove g module billing                  # scaffold + register in main.go
 grove g resource billing                # full slice: module + service + controller + smoke test
 grove g controller billing              # add a controller (reports wiring)
 grove g service billing                 # add a service (patches providers)
+grove g guard jwt                       # CanActivate guard (also: pipe|filter|interceptor)
+grove dev                               # run with restart on .go changes
+grove start --prod                      # run the app (go run .)
+grove test                              # run the project tests
+grove build                             # vet + test + compile
+grove wire --emit                       # generate wire_gen.go static DI wiring
 grove version                           # CLI + Go + OS
 grove --no-color new demo               # plain output for CI/logs
 grove --verbose new demo                # debug details

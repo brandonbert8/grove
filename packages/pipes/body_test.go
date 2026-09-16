@@ -49,12 +49,18 @@ func TestBodyStrictFlagsUnknownRules(t *testing.T) {
 	type odd struct {
 		X string `json:"x" validate:"frobnicator"`
 	}
-	if _, err := Body[odd](bodyCtx(t, `{"x":"y"}`)); err != nil {
-		t.Fatalf("lenient Body must ignore unknown rules, got %v", err)
+	// v0.3: Body is strict by default (fail-closed on unknown rules).
+	if _, err := Body[odd](bodyCtx(t, `{"x":"y"}`)); err == nil {
+		t.Fatal("default Body must flag unknown rules (strict by default)")
+	} else if he, ok := grove.AsHttpError(err); !ok || he.StatusCode() != 422 {
+		t.Fatalf("strict violation must be 422, got %v", err)
 	}
 	if _, err := Body[odd](bodyCtx(t, `{"x":"y"}`), Strict()); err == nil {
 		t.Fatal("strict Body must flag unknown rules")
 	} else if he, ok := grove.AsHttpError(err); !ok || he.StatusCode() != 422 {
 		t.Fatalf("strict violation must be 422, got %v", err)
+	}
+	if _, err := Body[odd](bodyCtx(t, `{"x":"y"}`), Lenient()); err != nil {
+		t.Fatalf("lenient Body must ignore unknown rules, got %v", err)
 	}
 }

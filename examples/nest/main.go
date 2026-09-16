@@ -18,12 +18,8 @@ import (
 
 func main() {
 	app := grove.New()
-	app.Router.Use(
-		middleware.Recovery(app.Logger),
-		middleware.RequestID(),
-		middleware.Logging(app.Logger),
-		middleware.CORS(middleware.DefaultCORSConfig()),
-	)
+	app.Router.Use(middleware.DefaultChain(app.Logger)...)
+	app.Router.Use(middleware.CORS(middleware.DefaultCORSConfig()))
 	// UsersModule imports AuthModule, which builds first exactly once.
 	app.MustRegister(
 		users.UsersModule.AsModule(),
@@ -34,7 +30,7 @@ func main() {
 		Version:     "0.2.0",
 		Description: "Modules, JWT guards, validation, and generated OpenAPI.",
 	})
-	if err := app.Run(""); err != nil {
+	if err := app.Listen(); err != nil {
 		panic(err)
 	}
 }

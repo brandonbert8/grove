@@ -37,8 +37,8 @@ func BindPath[T any](c router.Context, v *T) error {
 		if key == "" || key == "-" {
 			continue
 		}
-		if !rt.Field(i).IsExported() {
-			continue
+		if !f.IsExported() {
+			return grove.Internal(fmt.Sprintf("pipes: BindPath field %q has a path tag but is unexported", f.Name))
 		}
 		raw := c.Param(key)
 		if raw == "" {
@@ -50,7 +50,7 @@ func BindPath[T any](c router.Context, v *T) error {
 				"value for path parameter %q is not a valid %s", key, fv.Kind()))
 		}
 	}
-	if ferrs := Validate(v); len(ferrs) > 0 {
+	if ferrs := ValidateStrict(v); len(ferrs) > 0 {
 		return grove.Unprocessable("", ferrs)
 	}
 	return nil

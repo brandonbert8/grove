@@ -25,12 +25,15 @@ import (
 // route middleware compose per route, outermost group first and route
 // middleware innermost — without depending on Chi internals.
 type DefaultRouter struct {
-	mu          sync.RWMutex
-	mux         *chi.Mux
-	middlewares []Middleware
-	prefix      string
-	parent      *DefaultRouter
-	routes      []RouteInfo
+	mu           sync.RWMutex
+	mux          *chi.Mux
+	middlewares  []Middleware
+	prefix       string
+	parent       *DefaultRouter
+	routes       []RouteInfo
+	errorHandler func(Context, error)
+	// strict panics on duplicate method+path instead of last-wins.
+	strict bool
 }
 
 // New returns a DefaultRouter ready for registration.
@@ -39,6 +42,15 @@ type DefaultRouter struct {
 // with Grove-shaped JSON bodies ({"error","status"}) instead of the
 // stdlib text/plain defaults, so JSON APIs never leak text errors.
 func New() *DefaultRouter {
+	return NewWithOptions(false)
+}
+
+// NewStrict returns a router that panics on duplicate method+path
+// (v0.3 fail-fast). The default New keeps last-wins for compatibility.
+func NewStrict() *DefaultRouter { return NewWithOptions(true) }
+
+// NewWithOptions builds a router; strict enables duplicate panics.
+func NewWithOptions(strict bool) *DefaultRouter {
 	m := chi.NewRouter()
 	m.NotFound(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "not found")
@@ -46,7 +58,32 @@ func New() *DefaultRouter {
 	m.MethodNotAllowed(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}))
-	return &DefaultRouter{mux: m}
+	return &DefaultRouter{mux: m, strict: strict}
+}
+
+// SetErrorHandler overrides how handler errors render (used by
+// grove.App.UseFilters for @Catch-style filters). Nil restores default.
+func (r *DefaultRouter) SetErrorHandler(fn func(Context, error)) {
+	root := r.rootRouter()
+	root.mu.Lock()
+	defer root.mu.Unlock()
+	root.errorHandler = fn
+}
+
+// WriteError renders err as Grove JSON (default filter chain tail).
+// Exported so exception filters can delegate after inspection.
+func WriteError(ctx Context, err error) { writeHandlerError(ctx, err) }
+
+func (r *DefaultRouter) dispatchError(ctx Context, err error) {
+	root := r.rootRouter()
+	root.mu.RLock()
+	fn := root.errorHandler
+	root.mu.RUnlock()
+	if fn != nil {
+		fn(ctx, err)
+		return
+	}
+	writeHandlerError(ctx, err)
 }
 
 // rootRouter returns the shared root (self for roots, top parent for groups).
@@ -98,14 +135,18 @@ func (r *DefaultRouter) PATCH(path string, h HandlerFunc, mw ...Middleware) {
 
 // Handle registers a handler for an arbitrary method and path.
 //
+// Registration is startup-only: it is NOT safe to call Handle
+// concurrently with ServeHTTP (chi mutates internal maps). Register all
+// routes before Run/Handler serve traffic.
+//
 // An empty path mounts exactly at the group prefix (GET "" under
 // "/users" serves GET /users). Method is case-insensitive; "*" (or
 // empty) matches all methods via Chi's Handle. Other methods delegate
 // fully to Chi's matching, except one stdlib parity rule: GET routes
 // also answer HEAD (body stripped by net/http), mirroring ServeMux.
 // Explicit HEAD registrations win over the automatic mirror.
-// Re-registering an identical method+path replaces the route
-// (last wins, like ServeMux) instead of shadowing it.
+// By default re-registering replaces (last wins, like ServeMux);
+// NewStrict/NewWithOptions(true) panics instead with method+path.
 func (r *DefaultRouter) Handle(method, path string, h HandlerFunc, mw ...Middleware) {
 	if h == nil {
 		panic("router: handler must not be nil")
@@ -116,12 +157,18 @@ func (r *DefaultRouter) Handle(method, path string, h HandlerFunc, mw ...Middlew
 	// below must never poison the mutex into a process-wide deadlock.
 	root.mu.Lock()
 	defer root.mu.Unlock()
+	m := strings.ToUpper(strings.TrimSpace(method))
+	fullPath := normalizePath(JoinPath(r.prefix, path))
+	// Strict duplicate check BEFORE mutating chi: a panic must leave
+	// mux and routes consistent.
+	if root.strict && m != "" && m != "*" && routeExistsLocked(root, m, fullPath) {
+		panic(fmt.Sprintf("router: duplicate route %s %s (strict mode: use New() for last-wins)", m, fullPath))
+	}
 	// NB: root (global) middleware is NOT composed here — ServeHTTP
 	// applies it around the whole mux so it also covers 404/405 and
 	// preflights. chainLocked collects group ancestry only.
 	chain := r.chainLocked()
 	chain = append(chain, mw...)
-	fullPath := normalizePath(JoinPath(r.prefix, path))
 	final := applyMiddleware(h, chain)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		ctx := NewContext(w, req)
@@ -129,10 +176,10 @@ func (r *DefaultRouter) Handle(method, path string, h HandlerFunc, mw ...Middlew
 		// own status via Statuser; handlers that already wrote a
 		// response should return nil.
 		if err := final(ctx); err != nil {
-			writeHandlerError(ctx, err)
+			r.dispatchError(ctx, err)
 		}
 	})
-	switch m := strings.ToUpper(strings.TrimSpace(method)); m {
+	switch m {
 	case "", "*":
 		root.mux.Handle(fullPath, handler)
 	default:
@@ -141,10 +188,20 @@ func (r *DefaultRouter) Handle(method, path string, h HandlerFunc, mw ...Middlew
 		}
 		root.mux.Method(m, fullPath, handler)
 	}
-	upsertRouteLocked(root, RouteInfo{Method: strings.ToUpper(strings.TrimSpace(method)), Path: fullPath, Handler: final})
-	if strings.ToUpper(strings.TrimSpace(method)) == http.MethodGet {
+	upsertRouteLocked(root, RouteInfo{Method: m, Path: fullPath, Handler: final})
+	if m == http.MethodGet {
 		mirrorHeadLocked(root, fullPath, handler, final)
 	}
+}
+
+// routeExistsLocked reports a registered method+path. Callers hold root.mu.
+func routeExistsLocked(root *DefaultRouter, method, path string) bool {
+	for _, prev := range root.routes {
+		if prev.Method == method && prev.Path == path {
+			return true
+		}
+	}
+	return false
 }
 
 // upsertRouteLocked records ri, replacing any identical method+path so
@@ -159,17 +216,23 @@ func upsertRouteLocked(root *DefaultRouter, ri RouteInfo) {
 	root.routes = append(root.routes, ri)
 }
 
-// mirrorHeadLocked answers HEAD on GET routes for ServeMux parity,
-// unless the app registered HEAD explicitly (explicit wins).
+// mirrorHeadLocked answers HEAD on GET routes for ServeMux parity.
+// Re-registering GET refreshes the HEAD mirror too (last-wins on both);
+// an explicit HEAD route still wins and is never overwritten.
 // Callers hold root.mu.
 func mirrorHeadLocked(root *DefaultRouter, fullPath string, handler http.Handler, final HandlerFunc) {
+	explicit := false
 	for _, prev := range root.routes {
-		if prev.Method == http.MethodHead && prev.Path == fullPath {
-			return
+		if prev.Method == http.MethodHead && prev.Path == fullPath && !prev.autoHead {
+			explicit = true
+			break
 		}
 	}
+	if explicit {
+		return
+	}
 	root.mux.Method(http.MethodHead, fullPath, handler)
-	root.routes = append(root.routes, RouteInfo{Method: http.MethodHead, Path: fullPath, Handler: final})
+	upsertRouteLocked(root, RouteInfo{Method: http.MethodHead, Path: fullPath, Handler: final, autoHead: true})
 }
 
 // supportedMethods are the verbs chi (and net/http) route. Anything
@@ -210,6 +273,7 @@ func (r *DefaultRouter) Group(prefix string, mw ...Middleware) Router {
 		prefix:      JoinPath(r.prefix, prefix),
 		parent:      r,
 		middlewares: append([]Middleware{}, mw...),
+		strict:      root.strict,
 	}
 	return g
 }
@@ -243,7 +307,7 @@ func (r *DefaultRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return nil
 	}, global)
 	if err := final(ctx); err != nil {
-		writeHandlerError(ctx, err)
+		r.dispatchError(ctx, err)
 	}
 }
 
@@ -259,10 +323,18 @@ type Statuser interface {
 func writeHandlerError(ctx Context, err error) {
 	status := http.StatusInternalServerError
 	var se Statuser
-	if errors.As(err, &se) && se.StatusCode() >= 400 && se.StatusCode() <= 599 {
+	isTyped := errors.As(err, &se) && se.StatusCode() >= 400 && se.StatusCode() <= 599
+	if isTyped {
 		status = se.StatusCode()
 	}
-	body := map[string]any{"error": err.Error(), "status": status}
+	msg := err.Error()
+	if status == http.StatusInternalServerError && !isTyped {
+		// Never leak internals (SQL, paths, stack fragments) on 500:
+		// untyped errors get a stable envelope. Typed 4xx/5xx keep
+		// their programmer-set messages.
+		msg = "internal server error"
+	}
+	body := map[string]any{"error": msg, "status": status}
 	// Preserve machine-readable context (e.g. pipes validation
 	// failures carried by *grove.HttpError.Details) so clients can
 	// render field errors without parsing messages.
