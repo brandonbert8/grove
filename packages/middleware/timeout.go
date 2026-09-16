@@ -26,7 +26,7 @@ func Timeout(d time.Duration) router.Middleware {
 		return func(c router.Context) error {
 			ctx, cancel := context.WithTimeout(c.Request().Context(), d)
 			defer cancel()
-			*c.Request() = *c.Request().WithContext(ctx)
+			setRequest(c, c.Request().WithContext(ctx))
 
 			tw := &timeoutWriter{w: c.ResponseWriter(), h: make(http.Header)}
 			wc := &writerSwapContext{Context: c, writer: tw}
@@ -38,12 +38,18 @@ func Timeout(d time.Duration) router.Middleware {
 				return err
 			case <-ctx.Done():
 				tw.expire()
+				// If the handler already committed a response, the
+				// timeout body cannot replace it: drop it and let the
+				// committed bytes stand (no double-write corruption).
+				if tw.didWrite() {
+					<-done // handler already finished writing; no leak (buffered)
+					return nil
+				}
 				tw.w.Header().Set("Content-Type", "application/json")
 				tw.w.WriteHeader(http.StatusServiceUnavailable)
 				_, _ = tw.w.Write([]byte(`{"error":"request timeout","status":503}`))
-				// Drain so a same-process test goroutine never leaks;
-				// the production server does not depend on this.
-				go func() { <-done }()
+				// done is buffered (cap 1): the straggler's send never
+				// blocks, so no drain goroutine is needed and none leaks.
 				return nil
 			}
 		}
@@ -101,4 +107,24 @@ func (t *timeoutWriter) expire() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.expire_ = true
+}
+
+// didWrite reports whether the underlying response was committed.
+func (t *timeoutWriter) didWrite() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.wrote
+}
+
+// Wrote reports whether bytes were committed (for Recovery checks).
+func (t *timeoutWriter) Wrote() bool { return t.didWrite() }
+
+// setRequest swaps the request on contexts supporting it, falling back
+// to in-place mutation for foreign Context implementations.
+func setRequest(c router.Context, r *http.Request) {
+	if sr, ok := c.(interface{ SetRequest(*http.Request) }); ok {
+		sr.SetRequest(r)
+		return
+	}
+	*c.Request() = *r
 }

@@ -95,6 +95,7 @@ type ipLimiter struct {
 	rps        float64
 	burst      float64
 	maxClients int
+	lastSweep  time.Time
 }
 
 // take consumes one token, returning how long to wait when empty.
@@ -111,7 +112,10 @@ func (l *ipLimiter) take(key string) time.Duration {
 		}
 		b = &bucket{tokens: l.burst, last: now}
 		l.clients[key] = b
-		if len(l.clients) > 1024 {
+		// Sweep idle buckets at most once a minute: without throttling,
+		// every new IP under a rotating-IP flood pays O(n).
+		if len(l.clients) > 1024 && now.Sub(l.lastSweep) > time.Minute {
+			l.lastSweep = now
 			l.sweepLocked(now)
 		}
 	}

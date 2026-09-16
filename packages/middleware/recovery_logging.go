@@ -30,6 +30,12 @@ func Recovery(log logger.Logger) router.Middleware {
 						"request_id", GetRequestID(c),
 						"stack", string(debug.Stack()),
 					)
+					// If headers were already committed, a 500 body
+					// would be a corrupting double-write: log only.
+					if w, ok := c.ResponseWriter().(interface{ Wrote() bool }); ok && w.Wrote() {
+						err = nil
+						return
+					}
 					err = c.JSON(http.StatusInternalServerError, map[string]string{
 						"error": "internal server error",
 					})

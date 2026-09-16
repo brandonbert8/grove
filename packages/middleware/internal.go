@@ -5,7 +5,26 @@ import (
 	"errors"
 	"net"
 	"net/http"
+
+	"github.com/brandonbert8/grove/packages/logger"
+	"github.com/brandonbert8/grove/packages/router"
 )
+
+// DefaultChain returns the stock NestJS-style middleware stack:
+// Recovery outermost, then RequestID, Logging, and SecureHeaders.
+// It is the one-line equivalent of wiring the four by hand:
+//
+//	app.Router.Use(middleware.DefaultChain(app.Logger)...)
+//
+// Place it first in Use so RequestID correlates every log line.
+func DefaultChain(log logger.Logger) []router.Middleware {
+	return []router.Middleware{
+		Recovery(log),
+		RequestID(),
+		Logging(log),
+		SecureHeaders(),
+	}
+}
 
 // statusRecorder captures the status code for logging.
 type statusRecorder struct {
@@ -28,6 +47,9 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	}
 	return r.ResponseWriter.Write(b)
 }
+
+// Wrote reports whether headers were committed.
+func (r *statusRecorder) Wrote() bool { return r.wrote }
 
 // Flush implements http.Flusher so SSE and streaming handlers keep
 // working behind Logging: the implicit 200 is committed first, then

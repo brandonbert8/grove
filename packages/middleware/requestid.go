@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"net/http"
 	"time"
 
 	"github.com/brandonbert8/grove/packages/router"
@@ -25,15 +26,37 @@ func RequestID() router.Middleware {
 	return func(next router.HandlerFunc) router.HandlerFunc {
 		return func(c router.Context) error {
 			id := c.Request().Header.Get(RequestIDHeader)
-			if id == "" {
+			if !validRequestID(id) {
 				id = newRequestID()
 			}
-			*c.Request() = *c.Request().WithContext(
-				context.WithValue(c.Request().Context(), requestIDKey{}, id))
+			if sr, ok := c.(interface{ SetRequest(*http.Request) }); ok {
+				sr.SetRequest(c.Request().WithContext(
+					context.WithValue(c.Request().Context(), requestIDKey{}, id)))
+			} else {
+				*c.Request() = *c.Request().WithContext(
+					context.WithValue(c.Request().Context(), requestIDKey{}, id))
+			}
 			c.ResponseWriter().Header().Set(RequestIDHeader, id)
 			return next(c)
 		}
 	}
+}
+
+// validRequestID accepts tight inbound ids (prevents log/header
+// injection and giant echoes): 1-128 chars of [A-Za-z0-9-_].
+func validRequestID(s string) bool {
+	if len(s) == 0 || len(s) > 128 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' ||
+			b >= '0' && b <= '9' || b == '-' || b == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // GetRequestID returns the id attached by RequestID, falling back to

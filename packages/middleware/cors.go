@@ -72,15 +72,17 @@ func CORS(cfg CORSConfig) router.Middleware {
 			}
 
 			if c.Request().Method == http.MethodOptions {
-				h := c.ResponseWriter().Header()
-				h.Set("Access-Control-Allow-Methods", strings.Join(cfg.AllowMethods, ", "))
-				if len(cfg.AllowHeaders) > 0 {
-					h.Set("Access-Control-Allow-Headers", strings.Join(cfg.AllowHeaders, ", "))
-				}
-				if cfg.MaxAge > 0 {
-					h.Set("Access-Control-Max-Age", strconv.Itoa(cfg.MaxAge))
-				}
-				if allowed {
+				// Preflight headers only for allowed origins: a
+				// disallowed origin gets no CORS headers at all.
+				if allowed && origin != "" {
+					h := c.ResponseWriter().Header()
+					h.Set("Access-Control-Allow-Methods", strings.Join(cfg.AllowMethods, ", "))
+					if len(cfg.AllowHeaders) > 0 {
+						h.Set("Access-Control-Allow-Headers", strings.Join(cfg.AllowHeaders, ", "))
+					}
+					if cfg.MaxAge > 0 {
+						h.Set("Access-Control-Max-Age", strconv.Itoa(cfg.MaxAge))
+					}
 					return c.NoContent(http.StatusNoContent)
 				}
 				// Fall through for disallowed origins so the route (or
