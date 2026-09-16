@@ -20,18 +20,16 @@ type RefreshStore interface {
 }
 
 // Rotate redeems a refresh token for a fresh pair: it verifies the
-// token, consumes its jti (single-use), issues the next pair carrying
-// the same extra claims, and stores the new jti. A reused refresh
-// token fails here — treat that as compromise and revoke the subject's
-// sessions.
+// token, issues the next pair carrying the same extra claims, stores
+// the new jti, then consumes the old jti (single-use). Issuing before
+// consuming avoids orphaning the session when the store briefly fails.
+// A reused refresh token fails here — treat that as compromise and
+// revoke the subject's sessions.
 func Rotate(ctx context.Context, svc *Service, store RefreshStore, refreshToken string) (TokenPair, error) {
 	var zero TokenPair
 	claims, err := svc.VerifyRefresh(refreshToken)
 	if err != nil {
 		return zero, err
-	}
-	if _, ok := store.Consume(ctx, claims.ID); !ok {
-		return zero, fmt.Errorf("auth: unknown or reused refresh token")
 	}
 	pair, err := svc.IssuePair(claims.Subject, claims.Extra)
 	if err != nil {
@@ -39,6 +37,13 @@ func Rotate(ctx context.Context, svc *Service, store RefreshStore, refreshToken 
 	}
 	if err := store.Store(ctx, pair.RefreshID, claims.Subject, time.Unix(pair.RefreshExpiresAt, 0)); err != nil {
 		return zero, fmt.Errorf("auth: store refresh token: %w", err)
+	}
+	sub, ok := store.Consume(ctx, claims.ID)
+	if !ok {
+		return zero, fmt.Errorf("auth: unknown or reused refresh token")
+	}
+	if sub != claims.Subject {
+		return zero, fmt.Errorf("auth: refresh subject mismatch")
 	}
 	return pair, nil
 }
@@ -60,7 +65,8 @@ func NewMemoryRefreshStore() *MemoryRefreshStore {
 	return &MemoryRefreshStore{entries: map[string]refreshEntry{}}
 }
 
-// Store records id for subject until expires.
+// Store records id for subject until expires. Expired entries are
+// evicted eagerly and the table is hard-capped to blunt memory DoS.
 func (s *MemoryRefreshStore) Store(_ context.Context, id, subject string, expires time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -68,13 +74,25 @@ func (s *MemoryRefreshStore) Store(_ context.Context, id, subject string, expire
 		s.entries = map[string]refreshEntry{}
 	}
 	s.entries[id] = refreshEntry{subject: subject, expires: expires}
-	if len(s.entries) > 1024 {
+	if len(s.entries) > 4096 {
 		now := time.Now()
 		for k, e := range s.entries {
 			if now.After(e.expires) {
 				delete(s.entries, k)
 			}
 		}
+	}
+	// Hard cap: evict the oldest expiry when still over budget.
+	for len(s.entries) > 4096 {
+		var oldest string
+		var oldestExp time.Time
+		first := true
+		for k, e := range s.entries {
+			if first || e.expires.Before(oldestExp) {
+				oldest, oldestExp, first = k, e.expires, false
+			}
+		}
+		delete(s.entries, oldest)
 	}
 	return nil
 }

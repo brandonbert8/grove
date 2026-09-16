@@ -8,9 +8,15 @@ import (
 
 // HashPassword hashes a plaintext password with bcrypt (DefaultCost),
 // suitable for storing in a users table. Compare with ComparePassword.
+//
+// bcrypt truncates at 72 bytes: longer passwords are rejected instead of
+// silently colliding on a shared prefix.
 func HashPassword(password string) (string, error) {
 	if password == "" {
 		return "", fmt.Errorf("auth: password must not be empty")
+	}
+	if len(password) > 72 {
+		return "", fmt.Errorf("auth: password must not exceed 72 bytes (bcrypt limit)")
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {

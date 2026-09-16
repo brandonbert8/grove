@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"net/http"
 	"strings"
 
 	grove "github.com/brandonbert8/grove/packages/core"
@@ -21,15 +22,20 @@ func AuthGuard(svc *Service) router.Middleware {
 	return grove.UseGuard(grove.GuardFunc(func(c router.Context) error {
 		token, ok := bearerToken(c.Header("Authorization"))
 		if !ok {
-			return grove.Unauthorized("missing bearer token")
+			return grove.Unauthorized("invalid credentials")
 		}
 		claims, err := svc.Verify(token)
 		if err != nil {
-			return grove.Unauthorized("invalid token")
+			return grove.Unauthorized("invalid credentials")
 		}
-		// Attach claims without mutating the incoming request pointer:
-		// handlers reading c.Request() see the enriched context.
-		*c.Request() = *c.Request().WithContext(context.WithValue(c.Request().Context(), ctxKey{}, claims))
+		// Attach claims without mutating a shared *http.Request in
+		// place (data race when middlewares retain the pointer).
+		req := c.Request().WithContext(context.WithValue(c.Request().Context(), ctxKey{}, claims))
+		if sr, ok := c.(interface{ SetRequest(*http.Request) }); ok {
+			sr.SetRequest(req)
+		} else {
+			*c.Request() = *req
+		}
 		return nil
 	}))
 }
@@ -48,10 +54,13 @@ func CurrentUser(c router.Context) (Claims, bool) {
 // []string (hand-built claims), or a single string. Anything else denies
 // with 403 instead of failing open or panicking.
 func RequireRole(role string) router.Middleware {
+	if role == "" {
+		panic("auth: RequireRole role must not be empty")
+	}
 	return grove.UseGuard(grove.GuardFunc(func(c router.Context) error {
 		claims, ok := CurrentUser(c)
 		if !ok {
-			return grove.Unauthorized("missing bearer token")
+			return grove.Unauthorized("invalid credentials")
 		}
 		for _, r := range claimRoles(claims) {
 			if r == role {
@@ -64,10 +73,18 @@ func RequireRole(role string) router.Middleware {
 
 // RequireAnyRole passes when the caller carries at least one of roles.
 func RequireAnyRole(roles ...string) router.Middleware {
+	if len(roles) == 0 {
+		panic("auth: RequireAnyRole needs at least one role")
+	}
+	for _, r := range roles {
+		if r == "" {
+			panic("auth: RequireAnyRole role must not be empty")
+		}
+	}
 	return grove.UseGuard(grove.GuardFunc(func(c router.Context) error {
 		claims, ok := CurrentUser(c)
 		if !ok {
-			return grove.Unauthorized("missing bearer token")
+			return grove.Unauthorized("invalid credentials")
 		}
 		have := claimRoles(claims)
 		for _, want := range roles {

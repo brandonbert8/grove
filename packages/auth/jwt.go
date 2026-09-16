@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -37,9 +38,14 @@ type Claims struct {
 	Extra map[string]any `json:"extra,omitempty"`
 }
 
-// Valid reports whether the token has not expired (with 30s leeway).
+// Valid reports whether the token carries a subject and has not expired.
+// Expiry is exact (no grace): clock skew should be handled by short
+// negative-TTL tests, not by accepting expired tokens in production.
 func (c Claims) Valid() bool {
-	return c.Subject != "" && time.Now().Unix() < c.ExpiresAt+30
+	if c.Subject == "" || c.ExpiresAt == 0 {
+		return false
+	}
+	return time.Now().Unix() <= c.ExpiresAt
 }
 
 // Service issues and verifies HS256 JWTs. Create one per secret/issuer:
@@ -82,16 +88,31 @@ func WithRefreshTTL(d time.Duration) Option {
 }
 
 // NewService builds a Service. It panics on an empty secret: failing
-// closed beats issuing tokens nobody can verify.
+// closed beats issuing tokens nobody can verify. The secret is copied
+// so callers cannot mutate it after construction.
 func NewService(secret []byte, issuer string, opts ...Option) *Service {
 	if len(secret) == 0 {
 		panic("auth: JWT secret must not be empty")
 	}
-	s := &Service{secret: secret, issuer: issuer, ttl: time.Hour, refreshTTL: 7 * 24 * time.Hour}
+	cp := append([]byte(nil), secret...)
+	s := &Service{secret: cp, issuer: issuer, ttl: time.Hour, refreshTTL: 7 * 24 * time.Hour}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
+}
+
+// cloneExtra deep-copies the top-level claims map so concurrent caller
+// mutation cannot race signing.
+func cloneExtra(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // Sign issues an access token for subject carrying extra claims.
@@ -105,7 +126,7 @@ func (s *Service) Sign(subject string, extra map[string]any) (string, error) {
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(s.ttl).Unix(),
 		Type:      TokenTypeAccess,
-		Extra:     extra,
+		Extra:     cloneExtra(extra),
 	})
 }
 
@@ -169,7 +190,7 @@ func (s *Service) signRefresh(subject string, extra map[string]any) (string, str
 		ExpiresAt: now.Add(s.refreshTTL).Unix(),
 		ID:        id,
 		Type:      TokenTypeRefresh,
-		Extra:     extra,
+		Extra:     cloneExtra(extra),
 	})
 	if err != nil {
 		return "", "", err
@@ -238,10 +259,28 @@ func (s *Service) verify(token string) (Claims, error) {
 	if len(parts) != 3 {
 		return zero, fmt.Errorf("auth: malformed token")
 	}
+	// Enforce the expected header (no alg confusion): HS256/JWT only.
+	hdrRaw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return zero, fmt.Errorf("auth: malformed header")
+	}
+	var hdr struct {
+		Alg string `json:"alg"`
+		Typ string `json:"typ"`
+	}
+	if err := json.Unmarshal(hdrRaw, &hdr); err != nil {
+		return zero, fmt.Errorf("auth: malformed header")
+	}
+	if hdr.Alg != "HS256" {
+		return zero, fmt.Errorf("auth: unexpected signing algorithm")
+	}
 	mac := hmac.New(sha256.New, s.secret)
 	mac.Write([]byte(parts[0] + "." + parts[1]))
-	want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(want), []byte(parts[2])) {
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return zero, fmt.Errorf("auth: malformed signature")
+	}
+	if !hmac.Equal(mac.Sum(nil), sig) {
 		return zero, fmt.Errorf("auth: invalid signature")
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
@@ -250,9 +289,12 @@ func (s *Service) verify(token string) (Claims, error) {
 	}
 	var c Claims
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
-	dec.UseNumber()
 	if err := dec.Decode(&c); err != nil {
 		return zero, fmt.Errorf("auth: malformed claims: %w", err)
+	}
+	// Reject trailing garbage (ndjson smuggling / truncated Tampering).
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return zero, fmt.Errorf("auth: malformed claims")
 	}
 	if !c.Valid() {
 		return zero, fmt.Errorf("auth: token expired or invalid")
