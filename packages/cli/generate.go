@@ -35,6 +35,46 @@ func Generate(rootDir, kind, name string) (GenerateResult, error) {
 	}
 	target := filepath.Join(root, "modules", name)
 	switch strings.ToLower(kind) {
+	case "guard":
+		changes, err := writeFilesCollect(target, map[string]string{
+			"guard.go": guardFile(name, title(name)),
+		})
+		if err != nil {
+			return res, err
+		}
+		res.Changes = append(res.Changes, rebase(target, changes)...)
+		res.Notices = append(res.Notices,
+			fmt.Sprintf("wire %sGuard with grove.WithGuards or app.UseGuards", title(name)))
+	case "pipe":
+		changes, err := writeFilesCollect(target, map[string]string{
+			"pipe.go": pipeFile(name, title(name)),
+		})
+		if err != nil {
+			return res, err
+		}
+		res.Changes = append(res.Changes, rebase(target, changes)...)
+		res.Notices = append(res.Notices,
+			fmt.Sprintf("call Register%sRule() from module wiring, then use validate:\"%s\" in DTO tags", title(name), name))
+	case "filter":
+		changes, err := writeFilesCollect(target, map[string]string{
+			"filter.go": filterFile(name, title(name)),
+		})
+		if err != nil {
+			return res, err
+		}
+		res.Changes = append(res.Changes, rebase(target, changes)...)
+		res.Notices = append(res.Notices,
+			fmt.Sprintf("register with app.UseFilters(%sFilter{})", title(name)))
+	case "interceptor":
+		changes, err := writeFilesCollect(target, map[string]string{
+			"interceptor.go": interceptorFile(name, title(name)),
+		})
+		if err != nil {
+			return res, err
+		}
+		res.Changes = append(res.Changes, rebase(target, changes)...)
+		res.Notices = append(res.Notices,
+			fmt.Sprintf("register with app.UseInterceptors(%sInterceptor())", title(name)))
 	case "module":
 		changes, err := writeFilesCollect(target, moduleFiles(name))
 		if err != nil {
@@ -85,7 +125,7 @@ func Generate(rootDir, kind, name string) (GenerateResult, error) {
 			res.Notices = append(res.Notices, notice)
 		}
 	default:
-		return res, &UsageError{Msg: fmt.Sprintf("unknown generate kind %q: want module|controller|service|resource", kind)}
+		return res, &UsageError{Msg: fmt.Sprintf("unknown generate kind %q: want module|controller|service|resource|guard|pipe|filter|interceptor", kind)}
 	}
 	// A fully-skipped run says so explicitly instead of a bare success.
 	if len(res.Changes) > 0 {
@@ -189,6 +229,7 @@ package %[1]s
 import (
 	grove "github.com/brandonbert8/grove/packages/core"
 	"github.com/brandonbert8/grove/packages/di"
+	"github.com/brandonbert8/grove/packages/openapi"
 )
 
 // Module wires the %[1]s providers and controller. Register it with
@@ -200,27 +241,31 @@ var Module = &grove.ModuleDef{
 		// grove:providers
 	},
 	BuildControllers: func(app *grove.App) ([]grove.ControllerDef, error) {
-		ctrl, err := grove.Wire(app, New%[2]sController)
-		if err != nil {
-			return nil, err
-		}
-		return []grove.ControllerDef{{
-			Prefix: "/%[1]s",
-			Tags:   []string{"%[1]s"},
-			Endpoints: []grove.Endpoint{
-				// Empty paths mount exactly at the prefix: GET/POST /%[1]s.
-				grove.GET("", ctrl.List, grove.WithSummary("List %[1]s")),
-				grove.POST("", ctrl.Create, grove.WithSummary("Create %[1]s")),
-				// grove:endpoints
-			},
-		}}, nil
+		return grove.Controllers(app, New%[2]sController, func(ctrl *%[2]sController) grove.ControllerDef {
+			return grove.ControllerDef{
+				Prefix: "/%[1]s",
+				Tags:   []string{"%[1]s"},
+				Endpoints: []grove.Endpoint{
+					// Empty paths mount exactly at the prefix: GET/POST /%[1]s.
+					// Request/response schemas derive from the DTO types.
+					grove.GET("", ctrl.List,
+						grove.WithSummary("List %[1]s"),
+						openapi.WithResponse[[]string](200, "items")),
+					grove.POST("", grove.HandleBody(ctrl.Create, 201),
+						grove.WithSummary("Create %[1]s"),
+						openapi.WithBody[CreateInput](),
+						openapi.WithResponse[map[string]string](201, "created item")),
+					// grove:endpoints
+				},
+			}
+		})
 	},
 }
 `, name, t)
 }
 
 // resourceTestFile renders a smoke test for a generated resource: it
-// boots the module in-memory and drives GET/POST through httptest,
+// boots the module in-memory and drives GET/POST/422 through httptest,
 // the Test.createTestingModule equivalent.
 func resourceTestFile(name string) string {
 	t := title(name)
@@ -229,19 +274,19 @@ func resourceTestFile(name string) string {
 import (
 	"testing"
 
-	grove "github.com/brandonbert8/grove/packages/core"
 	"github.com/brandonbert8/grove/packages/grovtest"
 )
 
 // TestResourceSmoke boots the %[1]s module without a server and drives
 // its list/create endpoints through httptest.
 func TestResourceSmoke(t *testing.T) {
-	app := grove.New()
-	app.MustRegister(Module.AsModule())
+	app := grovtest.TestingModule(t, Module)
 
 	cli := grovtest.New(app)
 	grovtest.RequireStatus(t, cli.Get(t, "/%[1]s"), 200)
 	grovtest.RequireStatus(t, cli.Post(t, "/%[1]s", map[string]string{"name": "%[2]s item"}), 201)
+	// Short names violate validate:"min=2": expect a 422 naming the field.
+	grovtest.RequireValidationError(t, cli.Post(t, "/%[1]s", map[string]string{"name": "x"}), "name")
 }
 `, name, t)
 }

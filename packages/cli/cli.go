@@ -78,7 +78,7 @@ func NewRootCommand() *cobra.Command {
 	root.PersistentFlags().BoolVar(&g.noColor, "no-color", false, "disable colored output (also: NO_COLOR, non-TTY)")
 	root.PersistentFlags().BoolVar(&g.verbose, "verbose", false, "show debug details (timings, paths, errors)")
 	root.SetHelpTemplate(helpTemplate)
-	root.AddCommand(newNewCommand(g), newGenerateCommand(g), newVersionCommand())
+	root.AddCommand(newNewCommand(g), newGenerateCommand(g), newVersionCommand(), newLintCommand(g), newWireCommand(g), newBuildCommand(g), newStartCommand(g), newTestCommand(g), newDevCommand(g))
 	return root
 }
 
@@ -230,13 +230,13 @@ func newGenerateCommand(g *globalOpts) *cobra.Command {
 		Use:     "generate",
 		Aliases: []string{"g"},
 		Short:   "Generate a Grove component",
-		Example: "  grove generate module users\n  grove g controller users\n  grove g service users\n  grove g resource billing",
+		Example: "  grove generate module users\n  grove g controller users\n  grove g service users\n  grove g resource billing\n  grove g guard jwt\n  grove g pipe lower\n  grove g filter domain\n  grove g interceptor tracing",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},
 	}
-	for _, kind := range []string{"module", "controller", "service", "resource"} {
+	for _, kind := range []string{"module", "controller", "service", "resource", "guard", "pipe", "filter", "interceptor"} {
 		kind := kind
 		sub := &cobra.Command{
 			Use:   kind + " <name>",

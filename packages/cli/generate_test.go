@@ -264,3 +264,64 @@ func checkGoSyntax(paths ...string) error {
 	}
 	return nil
 }
+
+func TestGenerateGuardPipeFilterInterceptor(t *testing.T) {
+	dir := setupProject(t)
+	cases := map[string]struct {
+		file string
+		want []string
+	}{
+		"guard":       {"guard.go", []string{"JwtGuard", "CanActivate", "UseGuard"}},
+		"pipe":        {"pipe.go", []string{"RegisterJwtRule", "RegisterRule"}},
+		"filter":      {"filter.go", []string{"JwtFilter", "Catch"}},
+		"interceptor": {"interceptor.go", []string{"JwtInterceptor", "InterceptorFunc"}},
+	}
+	for kind, tc := range cases {
+		res, err := Generate(dir, kind, "jwt")
+		if err != nil {
+			t.Fatalf("%s: %v", kind, err)
+		}
+		if len(res.Changes) != 1 {
+			t.Fatalf("%s: changes = %v, want 1 CREATE", kind, res.Changes)
+		}
+		p := filepath.Join(dir, "modules", "jwt", tc.file)
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("%s: %v", kind, err)
+		}
+		for _, w := range tc.want {
+			if !strings.Contains(string(data), w) {
+				t.Fatalf("%s: %s missing %q", kind, tc.file, w)
+			}
+		}
+		if err := checkGoSyntax(p); err != nil {
+			t.Fatalf("%s: %v", kind, err)
+		}
+	}
+}
+
+func TestWireEmit(t *testing.T) {
+	dir := setupProject(t)
+	if _, err := Generate(dir, "module", "billing"); err != nil {
+		t.Fatal(err)
+	}
+	files, _, err := WireEmit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("files = %v, want 1 wire_gen.go", files)
+	}
+	data, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"WireBillingController", "WireBillingService", "di.ResolveAs", "DO NOT EDIT"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("wire_gen.go missing %q:\n%s", want, data)
+		}
+	}
+	if err := checkGoSyntax(files[0]); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -1,0 +1,209 @@
+package cli
+
+import (
+	"fmt"
+	"go/ast"
+	"go/format"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// WireEmit scans module packages for exported constructors
+// (func NewFoo(...) *Foo) and emits wire_gen.go files with static wiring
+// functions — the compile-time replacement for grove.Wire*:
+//
+//	func WireBillingController(c *di.Container) (*BillingController, error) {
+//	    svc, err := di.ResolveAs[*BillingService](c)
+//	    if err != nil {
+//	        return nil, err
+//	    }
+//	    return NewBillingController(svc), nil
+//	}
+//
+// Only same-package dependencies are emitted; cross-package constructor
+// params are reported as notices (keep grove.Wire for those). The output
+// is gofmt-clean and carries a `grove:generate` marker. Run it via
+// `grove wire --emit` (add `//go:generate grove wire --emit` to module.go).
+func WireEmit(dir string) (files []string, notices []string, err error) {
+	if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr != nil {
+		// Allow running inside a subdirectory: find the module root first.
+		if root, _, ferr := findModuleRoot(dir); ferr == nil {
+			dir = root
+		}
+	}
+	seen := map[string]bool{}
+	byDir := map[string][]string{}
+	err = filepath.Walk(dir, func(path string, info os.FileInfo, werr error) error {
+		if werr != nil || info.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") ||
+			strings.HasSuffix(path, "wire_gen.go") {
+			return nil
+		}
+		byDir[filepath.Dir(path)] = append(byDir[filepath.Dir(path)], path)
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	dirs := make([]string, 0, len(byDir))
+	for d := range byDir {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+	for _, pkgDir := range dirs {
+		if seen[pkgDir] {
+			continue
+		}
+		var (
+			pkg   string
+			ctors []ctor
+		)
+		for _, path := range byDir[pkgDir] {
+			p, c, perr := parseConstructors(path)
+			if perr != nil || len(c) == 0 {
+				continue
+			}
+			pkg = p
+			ctors = append(ctors, c...)
+		}
+		if len(ctors) == 0 {
+			continue
+		}
+		sort.Slice(ctors, func(i, j int) bool { return ctors[i].name < ctors[j].name })
+		out, skipped := renderWireFile(pkg, ctors)
+		if out == "" {
+			notices = append(notices, skipped...)
+			continue
+		}
+		dst := filepath.Join(pkgDir, "wire_gen.go")
+		formatted, ferr := format.Source([]byte(out))
+		if ferr != nil {
+			notices = append(notices, fmt.Sprintf("%s: emit skipped (%v)", pkgDir, ferr))
+			continue
+		}
+		if werr := os.WriteFile(dst, formatted, 0o644); werr != nil {
+			return files, notices, werr
+		}
+		seen[pkgDir] = true
+		files = append(files, dst)
+		notices = append(notices, skipped...)
+	}
+	return files, notices, nil
+}
+
+// ctor is one parsed constructor.
+type ctor struct {
+	name   string
+	params []string // same-package type exprs, e.g. "*BillingService"
+	ret    string   // return type expr, e.g. "*BillingController"
+	skip   string   // non-empty when unemittable, with reason
+}
+
+// parseConstructors finds exported func NewX(...) Ret constructors.
+func parseConstructors(path string) (string, []ctor, error) {
+	fset := token.NewFileSet()
+	src, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		return "", nil, err
+	}
+	var out []ctor
+	for _, decl := range src.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || !strings.HasPrefix(fn.Name.Name, "New") {
+			continue
+		}
+		if fn.Type.Results == nil || len(fn.Type.Results.List) != 1 {
+			continue
+		}
+		ret := exprString(fn.Type.Results.List[0].Type)
+		if ret == "" {
+			continue
+		}
+		c := ctor{name: fn.Name.Name, ret: ret}
+		if fn.Type.Params != nil {
+			for _, field := range fn.Type.Params.List {
+				typ := exprString(field.Type)
+				if !isLocalType(typ) {
+					c.skip = fmt.Sprintf("%s: cross-package param %q (keep grove.Wire)", c.name, typ)
+					break
+				}
+				n := 1
+				if len(field.Names) > 1 {
+					n = len(field.Names)
+				}
+				for i := 0; i < n; i++ {
+					c.params = append(c.params, typ)
+				}
+			}
+		}
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return src.Name.Name, out, nil
+}
+
+// exprString renders simple type exprs (*T, T, []T); "" when complex.
+func exprString(e ast.Expr) string {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		if inner := exprString(t.X); inner != "" {
+			return "*" + inner
+		}
+	case *ast.ArrayType:
+		if t.Len != nil {
+			return ""
+		}
+		if inner := exprString(t.Elt); inner != "" {
+			return "[]" + inner
+		}
+	}
+	return ""
+}
+
+// isLocalType reports same-package type exprs (no selector, no map/chan).
+func isLocalType(typ string) bool {
+	if typ == "" || strings.ContainsAny(typ, ".{}") {
+		return false
+	}
+	return true
+}
+
+// renderWireFile emits the package wire file, or "" when nothing is
+// emittable. Cross-package constructors come back as notices.
+func renderWireFile(pkg string, ctors []ctor) (string, []string) {
+	var notices []string
+	var b strings.Builder
+	b.WriteString("// Code generated by `grove wire --emit`. DO NOT EDIT.\n\n")
+	b.WriteString("package " + pkg + "\n\n")
+	b.WriteString("import (\n\t\"github.com/brandonbert8/grove/packages/di\"\n)\n")
+	emitted := 0
+	for _, c := range ctors {
+		if c.skip != "" {
+			notices = append(notices, c.skip)
+			continue
+		}
+		_, _ = fmt.Fprintf(&b, "\n// %s wires %s with static constructor calls (replaces grove.Wire).\n", "Wire"+strings.TrimPrefix(c.name, "New"), c.name)
+		_, _ = fmt.Fprintf(&b, "func %s(c *di.Container) (%s, error) {\n", "Wire"+strings.TrimPrefix(c.name, "New"), c.ret)
+		args := make([]string, 0, len(c.params))
+		for i, p := range c.params {
+			arg := fmt.Sprintf("d%d", i)
+			_, _ = fmt.Fprintf(&b, "\t%s, err := di.ResolveAs[%s](c)\n", arg, p)
+			_, _ = fmt.Fprintf(&b, "\tif err != nil {\n\t\treturn nil, err\n\t}\n")
+			args = append(args, arg)
+		}
+		_, _ = fmt.Fprintf(&b, "\treturn %s(%s), nil\n}\n", c.name, strings.Join(args, ", "))
+		emitted++
+	}
+	if emitted == 0 {
+		return "", notices
+	}
+	return b.String(), notices
+}
