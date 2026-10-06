@@ -46,6 +46,35 @@ func WithMiddleware(mw ...router.Middleware) TestOption {
 //	    grovtest.Override[*users.Service](mockSvc))
 func TestingModule(t testing.TB, mod *grove.ModuleDef, opts ...TestOption) *grove.App {
 	t.Helper()
+	var mods []grove.Module
+	if mod != nil {
+		mods = append(mods, mod.AsModule())
+	}
+	o := collectOptions(opts...)
+	return testingModules(t, mods, o)
+}
+
+// TestingModules builds an isolated App from any parade of Modules
+// (ModuleDef.AsModule() or grove.NewModule funcs). It is the escape
+// hatch for hello-style func modules that TestingModule(t, *ModuleDef)
+// cannot express:
+//
+//	app := grovtest.TestingModules(t, grove.NewModule("hello", fn))
+func TestingModules(t testing.TB, mods []grove.Module, opts ...TestOption) *grove.App {
+	t.Helper()
+	return testingModules(t, mods, collectOptions(opts...))
+}
+
+func collectOptions(opts ...TestOption) testOptions {
+	o := testOptions{}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+func testingModules(t testing.TB, mods []grove.Module, o testOptions) *grove.App {
+	t.Helper()
 	cfg, err := config.Load(config.WithOverrides(map[string]string{
 		"ENV": "test", "LOG_LEVEL": "error",
 	}))
@@ -53,17 +82,16 @@ func TestingModule(t testing.TB, mod *grove.ModuleDef, opts ...TestOption) *grov
 		t.Fatalf("grovtest: load test config: %v", err)
 	}
 	app := grove.New(grove.WithConfig(cfg))
-	o := testOptions{}
-	for _, opt := range opts {
-		opt(&o)
-	}
 	// Overrides first: BuildControllers resolves (and caches) lazy
 	// singletons during Register, so replacing after would be ignored.
 	for name, val := range o.overrides {
 		app.Container.Replace(name, val)
 	}
-	if mod != nil {
-		if err := app.Register(mod.AsModule()); err != nil {
+	for _, m := range mods {
+		if m == nil {
+			continue
+		}
+		if err := app.Register(m); err != nil {
 			t.Fatalf("grovtest: register module: %v", err)
 		}
 	}
