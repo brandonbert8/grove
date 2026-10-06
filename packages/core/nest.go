@@ -300,6 +300,13 @@ func (m *ModuleDef) Register(app *App) error {
 		// mock (via Container.Replace before Register) wins and the
 		// module's factory is skipped instead of erroring.
 		if app.Container.Has(p.Name) {
+			if app.strictProviders {
+				if owner, ok := app.providerOwners[p.Name]; ok {
+					return fmt.Errorf("grove: module %q provider %q duplicates %q (strict providers: rename or share via Imports)", m.displayName(), p.Name, owner)
+				}
+				// Has without owner = test Replace mock: keep compat skip.
+				continue
+			}
 			continue
 		}
 		var err error
@@ -314,6 +321,10 @@ func (m *ModuleDef) Register(app *App) error {
 		if err != nil {
 			return fmt.Errorf("grove: module %q provider %q: %w", m.displayName(), p.Name, err)
 		}
+		if app.providerOwners == nil {
+			app.providerOwners = make(map[string]string)
+		}
+		app.providerOwners[p.Name] = m.displayName()
 	}
 	for _, c := range m.Controllers {
 		app.mountController(c)

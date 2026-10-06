@@ -50,6 +50,10 @@ func (a *App) Docs() []EndpointDoc {
 //	app.RecordDocs(grove.ControllerDef{Prefix: "", Endpoints: []grove.Endpoint{
 //	    {Method: "GET", Path: "/legacy", Summary: "Legacy endpoint"},
 //	}})
+//
+// Convention over configuration: Build/Lint layer applies defaults
+// ("METHOD path" summary, {200: "OK"}/POST {201}) so CRUD tables stay
+// lean while Lint still flags truly undocumented routes.
 func (a *App) RecordDocs(c ControllerDef) {
 	for _, e := range c.Endpoints {
 		p := router.JoinPath(c.Prefix, e.Path)

@@ -167,3 +167,35 @@ func Controllers2[T1 any, T2 any, C any](app *App, ctor func(T1, T2) C, define f
 	}
 	return []ControllerDef{define(ctrl)}, nil
 }
+
+// Controllers3 is Controllers for three-dependency constructors
+// (see Wire3). It removes the Wire2→Wire3 rewrite cliff: adding a
+// dependency only changes the constructor, not the helper family.
+func Controllers3[T1 any, T2 any, T3 any, C any](app *App, ctor func(T1, T2, T3) C, define func(C) ControllerDef) ([]ControllerDef, error) {
+	ctrl, err := Wire3(app, ctor)
+	if err != nil {
+		return nil, err
+	}
+	return []ControllerDef{define(ctrl)}, nil
+}
+
+// Controllers4 is Controllers for four-dependency constructors
+// (see Wire4).
+func Controllers4[T1 any, T2 any, T3 any, T4 any, C any](app *App, ctor func(T1, T2, T3, T4) C, define func(C) ControllerDef) ([]ControllerDef, error) {
+	ctrl, err := Wire4(app, ctor)
+	if err != nil {
+		return nil, err
+	}
+	return []ControllerDef{define(ctrl)}, nil
+}
+
+// MustControllers is like Controllers but panics on error. Useful in
+// BuildControllers where wiring failures are programming errors and
+// returning nil,err boilerplate only obscures the route table.
+func MustControllers[T any, C any](app *App, ctor func(T) C, define func(C) ControllerDef) []ControllerDef {
+	defs, err := Controllers(app, ctor, define)
+	if err != nil {
+		panic(err)
+	}
+	return defs
+}

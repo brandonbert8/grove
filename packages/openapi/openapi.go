@@ -119,7 +119,18 @@ func Build(app *grove.App, info Info) Spec {
 		if desc == "" {
 			desc = strings.ToUpper(d.Method) + " " + d.Path
 		}
+		summary := d.Summary
+		if summary == "" {
+			summary = strings.ToUpper(d.Method) + " " + d.Path
+		}
 		responses := map[string]Response{"default": {Description: desc}}
+		if len(d.Responses) == 0 {
+			if strings.ToUpper(d.Method) == "POST" {
+				responses = map[string]Response{"201": {Description: "Created"}}
+			} else {
+				responses = map[string]Response{"200": {Description: "OK"}}
+			}
+		}
 		for code, text := range d.Responses {
 			key := "default"
 			if code != 0 {
@@ -164,7 +175,7 @@ func Build(app *grove.App, info Info) Spec {
 			schemas[refName] = d.BodySchema
 			item[method] = Operation{
 				OperationID: operationID(d.Method, d.Path),
-				Summary:     d.Summary,
+				Summary:     summary,
 				Description: d.Description,
 				Tags:        d.Tags,
 				Deprecated:  d.Deprecated,
@@ -184,7 +195,7 @@ func Build(app *grove.App, info Info) Spec {
 		}
 		item[method] = Operation{
 			OperationID: operationID(d.Method, d.Path),
-			Summary:     d.Summary,
+			Summary:     summary,
 			Description: d.Description,
 			Tags:        d.Tags,
 			Deprecated:  d.Deprecated,

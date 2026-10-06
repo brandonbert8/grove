@@ -51,15 +51,46 @@ func NewStrict() *DefaultRouter { return NewWithOptions(true) }
 
 // NewWithOptions builds a router; strict enables duplicate panics.
 func NewWithOptions(strict bool) *DefaultRouter {
+	r := &DefaultRouter{strict: strict}
 	m := chi.NewRouter()
-	m.NotFound(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	r.mux = m
+	m.NotFound(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		ctx := NewContext(w, req)
+		r.mu.RLock()
+		fn := r.errorHandler
+		r.mu.RUnlock()
+		if fn != nil {
+			fn(ctx, notFoundError{})
+			return
+		}
 		writeJSONError(w, http.StatusNotFound, "not found")
 	}))
-	m.MethodNotAllowed(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	m.MethodNotAllowed(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		ctx := NewContext(w, req)
+		r.mu.RLock()
+		fn := r.errorHandler
+		r.mu.RUnlock()
+		if fn != nil {
+			fn(ctx, methodNotAllowedError{})
+			return
+		}
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}))
-	return &DefaultRouter{mux: m, strict: strict}
+	return r
 }
+
+// notFoundError renders as Grove 404 JSON via WriteError so global
+// APP_FILTER chains observe unmatched paths like NestJS @Catch().
+type notFoundError struct{}
+
+func (notFoundError) Error() string   { return "not found" }
+func (notFoundError) StatusCode() int { return http.StatusNotFound }
+
+// methodNotAllowedError renders as Grove 405 JSON via WriteError.
+type methodNotAllowedError struct{}
+
+func (methodNotAllowedError) Error() string   { return "method not allowed" }
+func (methodNotAllowedError) StatusCode() int { return http.StatusMethodNotAllowed }
 
 // SetErrorHandler overrides how handler errors render (used by
 // grove.App.UseFilters for @Catch-style filters). Nil restores default.

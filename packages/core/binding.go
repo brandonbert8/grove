@@ -41,6 +41,26 @@ func HandleBody[T any](fn BodyHandler[T], status int) router.HandlerFunc {
 	}
 }
 
+// HandleBodyCreate wraps fn with decode + strict tag validation + 201
+// dispatch. It is the canonical create shorthand so callers never
+// hardcode the status in two places (handler + docs):
+//
+//	grove.POST("", grove.HandleBodyCreate(svc.Create),
+//	    grove.WithSummary("Create user"))
+//
+// Prefer HandleBody/HandleBodyCreate over calling pipes.Body inside a
+// plain router.HandlerFunc: both share the same 400/422 contract, but
+// HandleBody* removes the per-handler decode boilerplate and keeps
+// the status in one place.
+func HandleBodyCreate[T any](fn BodyHandler[T]) router.HandlerFunc {
+	return HandleBody(fn, 201)
+}
+
+// HandleBodyOK wraps fn with decode + strict tag validation + 200
+// dispatch (update/replace shorthand, symmetric with HandleBodyCreate).
+func HandleBodyOK[T any](fn BodyHandler[T]) router.HandlerFunc {
+	return HandleBody(fn, 200)
+}
 // decodeStrictBody is the shared DTO pipeline over the leaf validate
 // package (core cannot import pipes without a cycle): JSON decode with
 // the default cap, then strict tag validation.

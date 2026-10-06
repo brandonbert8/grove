@@ -2,6 +2,7 @@ package grove
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -52,6 +53,17 @@ type App struct {
 	excludedPrefixes []string
 	// filters run on handler errors, outermost-first (NestJS @Catch).
 	filters []ExceptionFilter
+	// strictProviders makes duplicate provider keys fail fast instead
+	// of first-wins (TestingModule overrides aside). Opt-in via
+	// EnableStrictProviders; default keeps v0.2 compat.
+	strictProviders bool
+	// enforceExports validates ModuleDef.Exports refer to registered
+	// providers via VerifyExports. Opt-in via EnableExportScoping;
+	// resolution itself stays app-wide until v1 scoping lands.
+	enforceExports bool
+	// providerOwners tracks which module registered each provider key,
+	// powering duplicate diagnostics and VerifyExports.
+	providerOwners map[string]string
 }
 
 // StartFunc boots a resource (DB pool, cron, queue) before serving.
@@ -269,6 +281,43 @@ func (a *App) MustRegister(mods ...Module) {
 // Modules returns the registered modules in registration order.
 func (a *App) Modules() []Module {
 	return append([]Module(nil), a.modules...)
+}
+
+// EnableStrictProviders makes duplicate provider keys an error at
+// Register time (fail fast on copy-paste modules). Testing overrides
+// via Container.Replace before Register still win: pre-replaced keys
+// are treated as intentional mocks and skipped, not errored.
+func (a *App) EnableStrictProviders() { a.strictProviders = true }
+
+// EnableExportScoping opts into validating ModuleDef.Exports: every
+// entry must name a provider the module (or its imports) registered.
+// Call VerifyExports after Register to fail fast on typos. This is the
+// stepping stone to full NestJS exports enforcement without breaking
+// v0.2 apps that rely on app-wide visibility.
+func (a *App) EnableExportScoping() { a.enforceExports = true }
+
+// VerifyExports checks every registered ModuleDef's Exports name a
+// known provider. It returns an error naming the module + missing key.
+// No-op unless EnableExportScoping was called.
+func (a *App) VerifyExports() error {
+	if !a.enforceExports {
+		return nil
+	}
+	for _, m := range a.modules {
+		ad, ok := m.(moduleDefAdapter)
+		if !ok || ad.m == nil {
+			continue
+		}
+		for _, e := range ad.m.Exports {
+			if e == "" {
+				return fmt.Errorf("grove: module %q exports empty provider name", ad.m.displayName())
+			}
+			if !a.Container.Has(e) {
+				return fmt.Errorf("grove: module %q exports unknown provider %q (did you add grove.Provide for it?)", ad.m.displayName(), e)
+			}
+		}
+	}
+	return nil
 }
 
 // OnStart registers hooks that run in order before Run starts

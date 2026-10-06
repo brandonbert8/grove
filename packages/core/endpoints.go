@@ -108,6 +108,17 @@ func WithSecurity(schemes ...string) EndpointOption {
 	return func(e *Endpoint) { e.Security = append(e.Security, schemes...) }
 }
 
+// WithOperation sets summary + responses in one call to cut CRUD
+// boilerplate (the @ApiOperation + @ApiResponse combo):
+//
+//	grove.GET("", ctrl.List, grove.WithOperation("List users", map[int]string{200: "users"}))
+func WithOperation(summary string, responses map[int]string) EndpointOption {
+	return func(e *Endpoint) {
+		e.Summary = summary
+		WithResponses(responses)(e)
+	}
+}
+
 // WithBodySchema attaches a request-body JSON Schema for docs
 // (the @ApiBody equivalent). Build it with openapi.SchemaFor[T]:
 //
