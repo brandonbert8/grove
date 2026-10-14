@@ -5,11 +5,13 @@ package users
 
 import (
 	"strconv"
+	"strings"
 	"sync"
 
 	fauth "github.com/brandonbert8/grove/packages/auth"
 	grove "github.com/brandonbert8/grove/packages/core"
 	"github.com/brandonbert8/grove/packages/di"
+	"github.com/brandonbert8/grove/packages/openapi"
 	"github.com/brandonbert8/grove/packages/pipes"
 	"github.com/brandonbert8/grove/packages/router"
 
@@ -76,37 +78,58 @@ type createInput struct {
 	Email string `json:"email" validate:"required,email"`
 }
 
+// listQuery is the GET /users query DTO (declarative @Query()).
+type listQuery struct {
+	Search string `query:"q"`
+	Limit  int    `query:"limit" validate:"gte=0,lte=100"`
+}
+
+// userParams is the GET /users/{id} path DTO (declarative @Param()).
+type userParams struct {
+	ID string `path:"id" validate:"required"`
+}
+
 // Controller serves the users routes (the @Controller() equivalent).
 type Controller struct{ svc *Service }
 
 // NewController builds the controller with constructor injection.
 func NewController(svc *Service) *Controller { return &Controller{svc: svc} }
 
-// List answers GET /users. It greets the caller from the JWT claims.
-func (c *Controller) List(ctx router.Context) error {
+// List answers GET /users. It greets the caller from the JWT claims and
+// optionally filters by ?q= with a ?limit= cap.
+func (c *Controller) List(ctx router.Context, q listQuery) (any, error) {
 	who := "anonymous"
 	if claims, ok := fauth.CurrentUser(ctx); ok {
 		who = claims.Subject
 	}
-	return ctx.JSON(200, map[string]any{"viewer": who, "users": c.svc.List()})
+	users := c.svc.List()
+	if q.Search != "" {
+		kept := users[:0]
+		for _, u := range users {
+			if strings.Contains(strings.ToLower(u.Name), strings.ToLower(q.Search)) {
+				kept = append(kept, u)
+			}
+		}
+		users = kept
+	}
+	if q.Limit > 0 && len(users) > q.Limit {
+		users = users[:q.Limit]
+	}
+	return map[string]any{"viewer": who, "users": users}, nil
 }
 
 // Get answers GET /users/{id}.
-func (c *Controller) Get(ctx router.Context) error {
-	u, ok := c.svc.Get(ctx.Param("id"))
+func (c *Controller) Get(ctx router.Context, p userParams) (any, error) {
+	u, ok := c.svc.Get(p.ID)
 	if !ok {
-		return grove.NotFound("user not found")
+		return nil, grove.NotFound("user not found")
 	}
-	return ctx.JSON(200, u)
+	return u, nil
 }
 
 // Create answers POST /users (admin role required).
-func (c *Controller) Create(ctx router.Context) error {
-	in, err := pipes.Body[createInput](ctx)
-	if err != nil {
-		return err
-	}
-	return ctx.JSON(201, c.svc.Add(in.Name, in.Email))
+func (c *Controller) Create(ctx router.Context, in createInput) (any, error) {
+	return c.svc.Add(in.Name, in.Email), nil
 }
 
 // UsersModule imports auth for ordering and guards every route with JWT;
@@ -134,16 +157,23 @@ var UsersModule = &grove.ModuleDef{
 			Security:   []string{"bearerAuth"},
 			Middleware: []router.Middleware{guard},
 			Endpoints: []grove.Endpoint{
-				grove.GET("", ctrl.List,
+				grove.GET("", pipes.HandleQuery(ctrl.List, 200),
 					grove.WithSummary("List users"),
+					grove.WithQuery(
+						grove.QueryParam("q", "Filter by name substring", false),
+						grove.QueryParamTyped("limit", "Max users (0 = all)", false, "integer"),
+					),
 					grove.WithResponses(map[int]string{200: "users + viewer"})),
-				grove.GET("/{id}", ctrl.Get,
+				grove.GET("/{id}", pipes.HandlePath(ctrl.Get, 200),
 					grove.WithSummary("Get user"),
-					grove.WithResponses(map[int]string{200: "user", 404: "unknown id"})),
-				grove.POST("", ctrl.Create,
+					grove.WithResponses(map[int]string{200: "user", 404: "unknown id"}),
+					openapi.WithResponse[User](200, "user")),
+				grove.POST("", grove.HandleBodyCreate(ctrl.Create),
 					grove.Use(fauth.RequireRole("admin")),
 					grove.WithSummary("Create user (admin)"),
-					grove.WithResponses(map[int]string{201: "created user", 401: "missing token", 403: "non-admin", 422: "invalid DTO"})),
+					openapi.WithBody[createInput](),
+					openapi.WithResponse[User](201, "created user"),
+					grove.WithResponses(map[int]string{401: "missing token", 403: "non-admin", 422: "invalid DTO"})),
 			},
 		}}, nil
 	},

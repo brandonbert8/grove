@@ -55,10 +55,15 @@ var HelloModule = grove.NewModule("hello", func(app *grove.App) error {
 func main() {
 	app := grove.New()
 	app.Router.Use(middleware.DefaultChain(app.Logger)...)
+	app.Router.Use(grove.RequestScope(app))
+	app.EnableStrictProviders()
 	app.MustRegister(
 		HelloModule,
 		grove.HealthModule("").AsModule(),
 	)
+	if err := app.VerifyExports(); err != nil {
+		panic(err)
+	}
 	if err := app.Listen(); err != nil {
 		panic(err)
 	}

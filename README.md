@@ -18,7 +18,7 @@ _Composition over magic · compile-time over reflection · clear boundaries from
 
 | 🧩 | **NestJS-style modules** — `ModuleDef` with imports, providers & controllers. No decorators, no magic: plain structs the compiler understands. |
 |---|---|
-| 💉 | **Explicit DI** — singletons, transients & lazy singletons with constructor injection. No reflection, no global container. |
+| 💉 | **Explicit DI** — singletons, transients, lazy singletons & request-scoped (`ProvideRequest`/`InjectRequest`, NestJS `Scope.REQUEST`) with constructor injection. No reflection, no global container. |
 | 🛡️ | **Guards & Auth** — `CanActivate`, JWT access + rotating refresh tokens, `bcrypt`, roles. |
 | 🔍 | **Pipes** — validate bodies, query, headers & path params with a tag engine you can extend. |
 | 🧪 | **Test harness** — drive your app through `httptest`, no booted server needed. |
@@ -35,7 +35,7 @@ _Composition over magic · compile-time over reflection · clear boundaries from
 | `@Injectable()` + constructor DI | `Provide` / `Provide0` + `grove.Inject[T]` / `grove.Wire(app, NewXxxController)` |
 | `@UseGuards()` / `APP_GUARD` | `UseGuard()` / per-controller `Middleware` / `app.UseGuards()` |
 | `@UseInterceptors()` / `APP_INTERCEPTOR` | `app.UseInterceptors()` + `grove.WrapData()` / `MapResponse()` |
-| `ValidationPipe` + `@Body()` | `grove.HandleBody(fn, 201)` (decode + strict-validate) or `pipes.Body[T](ctx)` / `BindQuery` / `BindHeader` / `BindPath` |
+| `ValidationPipe` + `@Body()` / `@Query()` / `@Param()` | `grove.HandleBody(fn, 201)` / `pipes.HandleQuery` / `pipes.HandlePath` / `pipes.HandleBodyQuery` (decode + bind + strict-validate + dispatch). `pipes.Body[T]` / `BindQuery` / `BindHeader` / `BindPath` stay as the manual escape hatch |
 | `ParseIntPipe` | `pipes.Path[int](c, "id")` — one generic, not one class per type |
 | `@ApiOperation` + Swagger | `WithSummary/Tags/Responses/Security` options + `openapi.WithBody[DTO]()` / `WithResponse[DTO]()` + `openapi.Mount` (+ `openapi.Lint`) |
 | Passport JWT | `auth.Service` + `AuthGuard` + `RequireRole` |
@@ -160,21 +160,32 @@ app.MustRegister(users.AsModule())
 ```
 
 Handlers return typed errors the router maps automatically, and DTOs
-validate through pipes:
+bind declaratively (the official form — decode + bind + strict-validate
++ dispatch in one line, status in one place):
 
 ```go
-func (c *UsersController) Create(ctx router.Context) error {
-    in, err := pipes.Body[CreateUserInput](ctx) // validate:"required,email,..."
-    if err != nil {
-        return err // 400 bad JSON, 422 failed validation (+ field details)
-    }
-    page, err := pipes.Query(ctx, "page", 1) // typed ?page with default
-    if err != nil {
-        return err // 400
-    }
-    _ = page
-    return ctx.JSON(201, c.svc.Create(in))
+// @Body() + ValidationPipe: method takes the DTO, HandleBody* dispatches.
+func (c *UsersController) Create(ctx router.Context, in CreateUserInput) (any, error) {
+    return c.svc.Create(in.Name, in.Email), nil // 201 via HandleBodyCreate
 }
+// Route table:
+grove.POST("", grove.HandleBodyCreate(ctrl.Create),
+    grove.WithSummary("Create user"),
+    openapi.WithBody[CreateUserInput](),
+    openapi.WithResponse[User](201, "created user"))
+
+// @Query() / @Param(): structs carry query:/path: tags + validate: rules.
+type ListQuery struct {
+    Q     string `query:"q"`
+    Limit int    `query:"limit" validate:"gte=0,lte=100"`
+}
+grove.GET("", pipes.HandleQuery(ctrl.List, 200),
+    grove.WithQuery(grove.QueryParamTyped("limit", "Max users", false, "integer")))
+grove.GET("/{id}", pipes.HandlePath(ctrl.Get, 200))
+// Body + query together: pipes.HandleBodyQuery(fn, 201).
+
+// Manual pipes.Body[T] / BindQuery / BindHeader / BindPath stay as the
+// escape hatch for handlers needing the raw values mid-logic.
 ```
 
 ## 🛡️ Middleware & Auth
@@ -357,12 +368,17 @@ stack-trace recovery, honest `Retry-After`, drain-before-stop,
 bcrypt + refresh rotation, required/strict config, self-wiring
 `generate`, lazy OpenAPI with query/responses/bearer docs, and CI.
 
-**Phase 3** — strict provider export scoping, `go generate` compile-time
-DI wiring, declarative param binding, OTel middleware.
-(Config schema via `config.Schema` and docs lint via `openapi.Lint` already shipped.)
+**v1** — runtime-only DI (`Singleton`/`Transient` + request-scoped
+`ProvideRequest`/`InjectRequest` via `grove.RequestScope`, NestJS
+`Scope.REQUEST` equivalent), strict providers + export validation
+opt-in, `setGlobalPrefix("/v1")` scaffold default, `ENV` validation,
+no DB/migrations (bring Prisma/TypeORM-style tooling, wire pools via
+`OnStart`/`OnStop`), no Docker/K8s scaffolds. OTel stays optional
+post-v1; `grove wire --emit` stays experimental and is not required.
 
 **Later** — WebSockets (`packages/ws`), gRPC (`packages/grpc`), GraphQL,
-cron jobs, queue workers, plugin system, Docker/K8s scaffolds.
+cron jobs, queue workers, plugin system, OTel middleware, Docker/K8s
+scaffolds, compile-time DI codegen research.
 
 See `docs/architecture.md` for where each piece integrates.
 

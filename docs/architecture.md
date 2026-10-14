@@ -164,12 +164,16 @@ Grove copies NestJS developer experience, never its runtime magic:
   codes, bearer schemes — and lazy `openapi.Mount` serves it in one
   line, always current. `openapi.Lint` audits missing summaries and
   responses like a docs-coverage `vet`.
-- **Pipes beyond bodies.** `pipes.Body[T]` decodes + validates DTOs in
-  one line (the `@Body()` + `ValidationPipe` equivalent);
-  `pipes.Path[T]` / `pipes.Query[T]` coerce params with `*HttpError`
-  400s (the `ParseIntPipe` equivalent, but one generic instead of one
-  class per type); `RegisterRule` adds custom validators (the
-  custom-decorator equivalent); `uuid`/`url` join the tag engine.
+- **Declarative binding (official form).** `grove.HandleBody*` for
+  bodies plus `pipes.HandleQuery` / `pipes.HandlePath` /
+  `pipes.HandleBodyQuery` for params: controller methods take
+  `(ctx, dto)` and return `(payload, error)`, the wrapper owns
+  decode + bind + strict-validate + status dispatch. `pipes.Body[T]`
+  / `BindQuery` / `BindHeader` / `BindPath` stay as the manual
+  escape hatch; `pipes.Path[T]` / `pipes.Query[T]` coerce single
+  params with `*HttpError` 400s (the `ParseIntPipe` equivalent, but
+  one generic instead of one class per type); `RegisterRule` adds
+  custom validators (the custom-decorator equivalent).
 - **Controllers, not handlers.** User route structs are named
   `XxxController` (the `@Controller()` equivalent); `router.HandlerFunc`
   stays the low-level function type. `grove.Inject` / `grove.Wire` /
@@ -204,8 +208,11 @@ grovtest, and the middleware pack since v0.2.0; the rest remains reserved):
   `App`, never inside `core`'s HTTP path.
 - **Cron** (`packages/cron`), **Queue** (`packages/queue`) — background
   runners started/stopped with `App` lifecycle.
-- **Plugins** — `Plugin.Apply(app)` before `app.Run`.
-- **Phase 3** — strict provider export scoping, `go generate`
-  compile-time DI wiring, declarative handler binding, OTel
-  middleware. (Rate-limit/timeout middleware and the test harness,
-  once Phase 3, shipped in v0.2.0.)
+ - **Plugins** — `Plugin.Apply(app)` before `app.Run`.
+- **v1 scope (runtime-only DI):** `Singleton`/`Transient` plus
+  request-scoped `di.RequestScoped` resolved from a per-request
+  `di.Scope` (`grove.RequestScope` middleware +
+  `grove.InjectRequest`, the NestJS `Scope.REQUEST` equivalent).
+  `grove wire --emit` codegen is parked as post-v1 research, OTel
+  stays optional, and there are no DB/migration or Docker/K8s
+  scaffolds (wire external stores via `OnStart`/`OnStop`).
