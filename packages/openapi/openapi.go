@@ -245,21 +245,30 @@ func operationID(method, path string) string {
 
 // pathParams extracts {name} segments in order, stripping chi regex
 // constraints ({id:[0-9]+} documents as id). The /* catch-all has no
-// OpenAPI equivalent and is skipped (documented on Build).
+// OpenAPI equivalent and is skipped (documented on Build). Segments
+// with numeric constraints ({id:[0-9]+}) or id-like names render as
+// integer; everything else renders as string.
 func pathParams(path string) []Parameter {
 	var out []Parameter
 	for _, seg := range strings.Split(path, "/") {
 		if len(seg) > 2 && strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
 			name := seg[1 : len(seg)-1]
+			typ := "string"
 			if i := strings.IndexByte(name, ':'); i >= 0 {
+				constraint := name[i+1:]
 				name = name[:i]
+				if strings.Contains(constraint, "[0-9]") || strings.Contains(constraint, "\\d") {
+					typ = "integer"
+				}
+			} else if name == "id" || strings.HasSuffix(name, "_id") || strings.HasSuffix(name, "Id") {
+				typ = "integer"
 			}
 			if name != "" && name != "*" {
 				out = append(out, Parameter{
 					Name:     name,
 					In:       "path",
 					Required: true,
-					Schema:   map[string]string{"type": "string"},
+					Schema:   map[string]string{"type": typ},
 				})
 			}
 		}
@@ -267,7 +276,8 @@ func pathParams(path string) []Parameter {
 	return out
 }
 
-// queryParams renders explicit Endpoint.Query metadata.
+// queryParams renders explicit Endpoint.Query metadata, honoring
+// QueryDef.Type (integer, number, boolean; default string).
 func queryParams(qs []grove.QueryDef) []Parameter {
 	var out []Parameter
 	for _, q := range qs {
@@ -279,10 +289,24 @@ func queryParams(qs []grove.QueryDef) []Parameter {
 			In:          "query",
 			Required:    q.Required,
 			Description: q.Description,
-			Schema:      map[string]string{"type": "string"},
+			Schema:      map[string]string{"type": normalizeParamType(q.Type)},
 		})
 	}
 	return out
+}
+
+// normalizeParamType maps QueryDef.Type onto the OpenAPI primitive set.
+func normalizeParamType(t string) string {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "integer", "int", "int32", "int64":
+		return "integer"
+	case "number", "float", "float32", "float64", "double":
+		return "number"
+	case "boolean", "bool":
+		return "boolean"
+	default:
+		return "string"
+	}
 }
 
 // JSON renders the spec.

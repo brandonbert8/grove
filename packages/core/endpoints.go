@@ -88,6 +88,15 @@ func QueryParam(name, description string, required bool) QueryDef {
 	return QueryDef{Name: name, Description: description, Required: required}
 }
 
+// QueryParamTyped declares one typed query parameter (integer, number,
+// boolean, or string) so pipes.Query[int]/pipes.Query[bool] handlers
+// and the OpenAPI spec agree:
+//
+//	grove.WithQuery(grove.QueryParamTyped("page", "Page number", false, "integer"))
+func QueryParamTyped(name, description string, required bool, typ string) QueryDef {
+	return QueryDef{Name: name, Description: description, Required: required, Type: typ}
+}
+
 // WithResponses maps status codes to descriptions for docs
 // (the @ApiResponse equivalent). Maps merge across options.
 func WithResponses(r map[int]string) EndpointOption {

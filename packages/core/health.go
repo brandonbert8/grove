@@ -78,9 +78,10 @@ func HealthModuleWithChecks(path string, timeout time.Duration, checks map[strin
 			}
 			n++
 			go func(name string, check Check) {
-				// Per-check timeout so one slow dependency cannot
-				// starve the rest sharing the probe budget.
-				cctx, ccancel := context.WithTimeout(context.Background(), timeout)
+				// Per-check timeout derived from the probe budget so
+				// client disconnects cancel hung dependencies instead
+				// of leaking goroutines on Background.
+				cctx, ccancel := context.WithTimeout(ctx, timeout)
 				defer ccancel()
 				ch <- result{name, check(cctx)}
 			}(name, check)

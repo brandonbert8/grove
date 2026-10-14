@@ -9,7 +9,10 @@ import (
 // BodyHandler is a declarative DTO handler: receives a validated body of
 // type T plus the request context, returns a payload (written as JSON
 // 200/201) or an error. It is the Go equivalent of NestJS `@Body() dto`
-// with the ValidationPipe applied — no pipes.Body boilerplate:
+// with the ValidationPipe applied — no pipes.Body boilerplate.
+// Together with pipes.HandleQuery, pipes.HandlePath, and
+// pipes.HandleBodyQuery it is the official binding form; manual
+// pipes.Body/Bind* calls stay as the escape hatch:
 //
 //	grove.POST("", grove.HandleBody(svc.Create, 201),
 //	    grove.WithSummary("Create user"),

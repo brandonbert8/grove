@@ -26,6 +26,19 @@ func DefaultChain(log logger.Logger) []router.Middleware {
 	}
 }
 
+// ProductionChain extends DefaultChain with response compression.
+// CORS, RateLimit, and Timeout stay opt-in: CORS needs explicit
+// allow-lists, RateLimit is process-local, and Timeout breaks
+// Hijacker/Flusher so it belongs on specific groups/routes, not
+// globally. See their constructors for the per-app tuning:
+//
+//	app.Router.Use(middleware.DefaultChain(app.Logger)...)
+//	app.Router.Use(middleware.Compress())
+//	v1 := app.Router.Group("/v1", middleware.Timeout(5*time.Second))
+func ProductionChain(log logger.Logger) []router.Middleware {
+	return append(DefaultChain(log), Compress())
+}
+
 // statusRecorder captures the status code for logging.
 type statusRecorder struct {
 	http.ResponseWriter

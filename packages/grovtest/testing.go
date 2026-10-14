@@ -20,6 +20,9 @@ type testOptions struct {
 type TestOption func(*testOptions)
 
 // Override replaces provider T with a mock (overrideProvider equivalent).
+// It wins over module factories for singletons, transients, and
+// request-scoped providers: pre-registered before Register, so even
+// lazy/BuildControllers wiring sees the mock.
 func Override[T any](instance T) TestOption {
 	return func(o *testOptions) {
 		if o.overrides == nil {
@@ -82,6 +85,11 @@ func testingModules(t testing.TB, mods []grove.Module, o testOptions) *grove.App
 		t.Fatalf("grovtest: load test config: %v", err)
 	}
 	app := grove.New(grove.WithConfig(cfg))
+	// Request scope first so InjectRequest shares one Scope per
+	// request in tests even when the module under test never mounts
+	// grove.RequestScope itself. Nested mounts (app also uses it)
+	// just shadow; the innermost scope wins and both close cleanly.
+	app.Router.Use(grove.RequestScope(app))
 	// Overrides first: BuildControllers resolves (and caches) lazy
 	// singletons during Register, so replacing after would be ignored.
 	for name, val := range o.overrides {

@@ -123,12 +123,15 @@ func bodyInto(c router.Context, v any, o bodyOptions) error {
 }
 
 // BindQuery maps URL query parameters onto v using `query` tags, then
-// validates the result. Supported field kinds: string, bool, all int/uint
-// widths, float32/64, and slices of those (repeated params). Fields
-// without a `query` tag are left untouched.
+// validates the result strictly. Supported field kinds: string, bool,
+// all int/uint widths, float32/64, and slices of those (repeated
+// params). Fields without a `query` tag are left untouched.
 //
 // Malformed values are 400 *grove.HttpError (fail-closed, consistent
-// with Query): `?limit=abc` never silently becomes zero.
+// with Query): `?limit=abc` never silently becomes zero. Rule
+// violations — including unknown rules — are 422, consistent with
+// Body (strict default) and BindPath. There is no lenient mode:
+// query tags are contracts.
 //
 //	type ListQuery struct {
 //	    Search string `query:"q"`
@@ -136,6 +139,9 @@ func bodyInto(c router.Context, v any, o bodyOptions) error {
 //	}
 //	var q ListQuery
 //	if err := pipes.BindQuery(c, &q); err != nil { return err }
+//
+// Prefer pipes.HandleQuery for new endpoints: same contract without
+// the per-handler boilerplate.
 func BindQuery[T any](c router.Context, v *T) error {
 	if v == nil {
 		return grove.Internal("pipes: BindQuery target must not be nil")
@@ -182,14 +188,14 @@ func BindQuery[T any](c router.Context, v *T) error {
 				"value for query parameter %q is not a valid %s", key, fv.Kind()))
 		}
 	}
-	if ferrs := Validate(v); len(ferrs) > 0 {
+	if ferrs := ValidateStrict(v); len(ferrs) > 0 {
 		return grove.Unprocessable("", ferrs)
 	}
 	return nil
 }
 
 // BindHeader maps request headers onto v using `header` tags, then
-// validates the result — the BindQuery twin for headers:
+// validates the result strictly — the BindQuery twin for headers:
 //
 //	type TraceCtx struct {
 //	    RequestID string `header:"X-Request-ID" validate:"required"`
@@ -230,7 +236,7 @@ func BindHeader[T any](c router.Context, v *T) error {
 				"value for header %q is not a valid %s", key, fv.Kind()))
 		}
 	}
-	if ferrs := Validate(v); len(ferrs) > 0 {
+	if ferrs := ValidateStrict(v); len(ferrs) > 0 {
 		return grove.Unprocessable("", ferrs)
 	}
 	return nil

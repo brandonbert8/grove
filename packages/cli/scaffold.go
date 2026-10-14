@@ -157,15 +157,23 @@ import (
 func main() {
 	app := grove.New()
 	app.Router.Use(middleware.DefaultChain(app.Logger)...)
+	app.Router.Use(grove.RequestScope(app))
 	// NestJS-style globals (the APP_GUARD / APP_INTERCEPTOR equivalent):
 	// app.UseGuards(grove.GuardFunc(requireAuth))
 	// app.UseInterceptors(grove.WrapData())
 
+	// v1 defaults: fail fast on duplicate providers, version APIs under
+	// /v1 while keeping probes unprefixed (NestJS setGlobalPrefix).
+	app.EnableStrictProviders()
+	app.SetGlobalPrefix("/v1", "/healthz", "/openapi.json")
 	app.MustRegister(
 		hello.Module.AsModule(),
 		grove.HealthModule("").AsModule(),
 		// grove:modules
 	)
+	if err := app.VerifyExports(); err != nil {
+		panic(err)
+	}
 
 	if err := app.Listen(); err != nil {
 		panic(err)

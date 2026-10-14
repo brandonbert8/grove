@@ -1,6 +1,7 @@
 package grove
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/brandonbert8/grove/packages/di"
@@ -12,16 +13,20 @@ import (
 //
 // Name defaults to di.KeyFor[T] when built with Provide/ProvideValue.
 // Build receives the container so constructors resolve their own
-// dependencies explicitly.
+// dependencies explicitly. Request-scoped providers use BuildScoped
+// (see ProvideRequest) and resolve once per request Scope.
 type Provider struct {
 	// Name is the container key. Empty means the provider must be
 	// constructed with Provide/ProvideValue, which fill it in.
 	Name string
-	// Lifetime is di.Singleton or di.Transient.
+	// Lifetime is di.Singleton, di.Transient, or di.RequestScoped.
 	Lifetime di.Lifetime
 	// Build constructs the value. For singletons it runs once and the
 	// result is cached by the container.
 	Build func(c *di.Container) (any, error)
+	// BuildScoped constructs a request-scoped value. Only set when
+	// Lifetime == di.RequestScoped (via ProvideRequest).
+	BuildScoped func(c *di.Container, ctx context.Context) (any, error)
 }
 
 // Provide builds a Provider for type T using a constructor function.
@@ -56,6 +61,30 @@ func Provide0[T any](lifetime di.Lifetime, build func() T) Provider {
 	return Provide(lifetime, func(*di.Container) (T, error) {
 		return build(), nil
 	})
+}
+
+// ProvideRequest builds a request-scoped Provider for type T (NestJS
+// Scope.REQUEST equivalent). The factory runs at most once per request
+// Scope created by grove.RequestScope middleware and resolves with
+// grove.InjectRequest:
+//
+//	grove.ProvideRequest(func(c *di.Container, ctx context.Context) (*ReqCtx, error) {
+//	    return NewReqCtx(ctx), nil
+//	})
+//
+// Values must not retain the context, request, or writer.
+func ProvideRequest[T any](build func(c *di.Container, ctx context.Context) (T, error)) Provider {
+	return Provider{
+		Name:     di.KeyFor[T](),
+		Lifetime: di.RequestScoped,
+		BuildScoped: func(c *di.Container, ctx context.Context) (any, error) {
+			v, err := build(c, ctx)
+			if err != nil {
+				return nil, err
+			}
+			return v, nil
+		},
+	}
 }
 
 // Endpoint is one route in a controller's table: the compile-time,
@@ -107,6 +136,9 @@ type QueryDef struct {
 	Description string
 	// Required marks a required parameter.
 	Required bool
+	// Type is the OpenAPI primitive: string (default), integer,
+	// number, or boolean. Unknown values render as string.
+	Type string
 }
 
 // GET builds an Endpoint for the GET verb.
@@ -293,7 +325,13 @@ func (m *ModuleDef) Register(app *App) error {
 		}
 	}
 	for _, p := range m.Providers {
-		if p.Name == "" || p.Build == nil {
+		if p.Name == "" {
+			return fmt.Errorf("grove: module %q has a provider with empty name or nil build", m.displayName())
+		}
+		if p.Lifetime == di.RequestScoped && p.BuildScoped == nil {
+			return fmt.Errorf("grove: module %q provider %q is request-scoped but has no factory (use grove.ProvideRequest)", m.displayName(), p.Name)
+		}
+		if p.Lifetime != di.RequestScoped && p.Build == nil {
 			return fmt.Errorf("grove: module %q has a provider with empty name or nil build", m.displayName())
 		}
 		// TestingModule.overrideProvider semantics: a pre-registered
@@ -313,6 +351,8 @@ func (m *ModuleDef) Register(app *App) error {
 		switch p.Lifetime {
 		case di.Transient:
 			err = app.Container.RegisterTransient(p.Name, p.Build)
+		case di.RequestScoped:
+			err = app.Container.RegisterScoped(p.Name, p.BuildScoped)
 		default:
 			// Lazy singleton: built on first resolution so provider
 			// order within (and across) modules never matters.

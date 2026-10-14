@@ -37,12 +37,16 @@ func newLintCommand(g *globalOpts) *cobra.Command {
 }
 
 // newWireCommand builds `grove wire`: explain/verify DI wiring.
+// v1 is runtime-only on purpose: `wire` is a wiring smoke check that
+// counts grove.Provide* calls. `--emit` is experimental scaffolding for
+// a possible post-v1 compile-time codegen and must not be required for
+// production builds.
 func newWireCommand(g *globalOpts) *cobra.Command {
 	var emit bool
 	cmd := &cobra.Command{
 		Use:   "wire",
 		Short: "Count DI providers (wiring smoke check)",
-		Long:  "Heuristically counts grove.Provide* calls without running the app.\nWith --emit, generates wire_gen.go static wiring per module package\n(replacing grove.Wire with compile-time constructor calls).\nDuplicate keys fail fast at runtime in ModuleDef.Register.",
+		Long:  "Heuristically counts grove.Provide* calls without running the app.\n--emit is experimental (post-v1 research): it generates wire_gen.go\nscaffolding that is NOT required for v1 runtime DI (grove.Inject/Wire\nplus request-scoped grove.ProvideRequest/grove.InjectRequest).\nDuplicate keys fail fast at runtime in ModuleDef.Register.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := renderer(cmd, g)
 			r.Header("")
@@ -51,6 +55,7 @@ func newWireCommand(g *globalOpts) *cobra.Command {
 				return fail(r, 1, "Could not wire", err.Error(), "", err)
 			}
 			if emit {
+				r.Warning("--emit is experimental and not needed for v1 runtime DI")
 				files, notices, err := WireEmit(cwd)
 				if err != nil {
 					return fail(r, 1, "Could not emit wiring", err.Error(), "", err)
@@ -79,7 +84,7 @@ func newWireCommand(g *globalOpts) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&emit, "emit", false, "generate wire_gen.go static wiring files")
+	cmd.Flags().BoolVar(&emit, "emit", false, "experimental: generate wire_gen.go scaffolding (not needed for v1)")
 	return cmd
 }
 

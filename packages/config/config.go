@@ -165,6 +165,11 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("config: invalid LOG_LEVEL %q: want debug|info|warn|error", c.LogLevel)
 	}
+	switch c.Env {
+	case "development", "test", "production":
+	default:
+		return fmt.Errorf("config: invalid ENV %q: want development|test|production", c.Env)
+	}
 	if c.Port < 1 || c.Port > 65535 {
 		return fmt.Errorf("config: invalid Port %d: must be 1-65535", c.Port)
 	}
