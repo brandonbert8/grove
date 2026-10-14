@@ -1,7 +1,9 @@
 package di
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"reflect"
 	"sync"
 )
@@ -14,6 +16,11 @@ const (
 	Singleton Lifetime = iota
 	// Transient invokes the factory on every resolution.
 	Transient
+	// RequestScoped caches one instance per request Scope (NestJS
+	// Scope.REQUEST equivalent). Factories receive the request
+	// context; values must not retain *http.Request or writers.
+	// v1 is runtime-only: resolved via Scope, never via Container.Resolve.
+	RequestScoped
 )
 
 // entry holds one registration.
@@ -21,6 +28,7 @@ type entry struct {
 	lifetime Lifetime
 	instance any
 	factory  func(c *Container) (any, error)
+	scoped   func(c *Container, ctx context.Context) (any, error)
 }
 
 // Container is a minimal dependency injection container.
@@ -147,6 +155,33 @@ func (c *Container) MustRegisterTransient(name string, factory func(c *Container
 	}
 }
 
+// RegisterScoped stores a per-request factory (NestJS Scope.REQUEST).
+// The factory runs at most once per Scope and may resolve singletons
+// and transients from c plus other scoped values from the same scope
+// via Scope.Resolve. Do not retain ctx, requests, or writers.
+func (c *Container) RegisterScoped(name string, factory func(c *Container, ctx context.Context) (any, error)) error {
+	if name == "" {
+		return fmt.Errorf("di: scoped name must not be empty")
+	}
+	if factory == nil {
+		return fmt.Errorf("di: scoped %q factory must not be nil", name)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.entries[name]; exists {
+		return fmt.Errorf("di: %q is already registered", name)
+	}
+	c.entries[name] = &entry{lifetime: RequestScoped, scoped: factory}
+	return nil
+}
+
+// MustRegisterScoped is like RegisterScoped but panics on error.
+func (c *Container) MustRegisterScoped(name string, factory func(c *Container, ctx context.Context) (any, error)) {
+	if err := c.RegisterScoped(name, factory); err != nil {
+		panic(err)
+	}
+}
+
 // Has reports whether name is registered.
 func (c *Container) Has(name string) bool {
 	c.mu.Lock()
@@ -197,6 +232,10 @@ func (c *Container) Resolve(name string) (any, error) {
 			return nil, fmt.Errorf("di: factory for %q returned nil", name)
 		}
 		return inst, nil
+	}
+	if e.lifetime == RequestScoped {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("di: %q is request-scoped: resolve it from di.Scope (grove.RequestScope middleware + grove.InjectRequest), not from the root container", name)
 	}
 	// Singleton with factory: singleflight.
 	if call, building := c.inflight[name]; building {
@@ -253,6 +292,150 @@ func (c *Container) MustResolve(name string) any {
 	return v
 }
 
+// scopeKey carries a *Scope in a context.Context.
+type scopeKey struct{}
+
+// Scope is a per-request child of a Container (NestJS REQUEST scope).
+// Singletons and transients delegate to the parent; request-scoped
+// values are built once per Scope and cached. One Scope per request;
+// never share across requests. Close releases io.Closers built in it.
+type Scope struct {
+	parent    *Container
+	ctx       context.Context
+	mu        sync.Mutex
+	cache     map[string]any
+	resolving map[string]bool
+	closers   []io.Closer
+}
+
+// ScopeOf derives a per-request Scope bound to ctx.
+func (c *Container) Scope(ctx context.Context) *Scope {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &Scope{parent: c, ctx: ctx, cache: make(map[string]any), resolving: make(map[string]bool)}
+}
+
+// Context returns the request context the Scope was created with.
+func (s *Scope) Context() context.Context {
+	if s.ctx == nil {
+		return context.Background()
+	}
+	return s.ctx
+}
+
+// WithScope stores s in ctx for later ScopeFrom lookup.
+func WithScope(ctx context.Context, s *Scope) context.Context {
+	return context.WithValue(ctx, scopeKey{}, s)
+}
+
+// ScopeFrom returns the Scope stored in ctx, if any.
+func ScopeFrom(ctx context.Context) (*Scope, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	s, ok := ctx.Value(scopeKey{}).(*Scope)
+	if s == nil || !ok {
+		return nil, false
+	}
+	return s, true
+}
+
+// Resolve returns the dependency for name within this request.
+// Singleton → parent shared instance. Transient → fresh build.
+// RequestScoped → built once per Scope and cached. Circular scoped
+// chains return an error.
+func (s *Scope) Resolve(name string) (any, error) {
+	s.mu.Lock()
+	if v, ok := s.cache[name]; ok {
+		s.mu.Unlock()
+		return v, nil
+	}
+	if s.resolving[name] {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("di: circular scoped dependency detected for %q", name)
+	}
+	s.mu.Unlock()
+
+	s.parent.mu.Lock()
+	e, ok := s.parent.entries[name]
+	s.parent.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("di: no registration for %q (did you add grove.Provide/ProvideRequest for it?)", name)
+	}
+	switch e.lifetime {
+	case Singleton, Transient:
+		return s.parent.Resolve(name)
+	case RequestScoped:
+		s.mu.Lock()
+		s.resolving[name] = true
+		s.mu.Unlock()
+		defer func() {
+			s.mu.Lock()
+			delete(s.resolving, name)
+			s.mu.Unlock()
+		}()
+		if e.scoped == nil {
+			return nil, fmt.Errorf("di: scoped registration %q has no factory", name)
+		}
+		v, err := e.scoped(s.parent, s.Context())
+		if err != nil {
+			return nil, fmt.Errorf("di: scoped factory for %q failed: %w", name, err)
+		}
+		if v == nil {
+			return nil, fmt.Errorf("di: scoped factory for %q returned nil", name)
+		}
+		s.mu.Lock()
+		s.cache[name] = v
+		if cl, ok := v.(io.Closer); ok {
+			s.closers = append(s.closers, cl)
+		}
+		s.mu.Unlock()
+		return v, nil
+	default:
+		return nil, fmt.Errorf("di: unknown lifetime for %q", name)
+	}
+}
+
+// MustResolve is like Resolve but panics on error.
+func (s *Scope) MustResolve(name string) any {
+	v, err := s.Resolve(name)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// Close releases scoped io.Closers in reverse order (best-effort,
+// first error returned). Call at the end of the request.
+func (s *Scope) Close() error {
+	s.mu.Lock()
+	closers := append([]io.Closer(nil), s.closers...)
+	s.closers = nil
+	s.mu.Unlock()
+	var first error
+	for i := len(closers) - 1; i >= 0; i-- {
+		if err := closers[i].Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// ResolveScoped resolves the default key for T within s.
+func ResolveScoped[T any](s *Scope) (T, error) {
+	var zero T
+	v, err := s.Resolve(keyFor[T]())
+	if err != nil {
+		return zero, err
+	}
+	typed, ok := v.(T)
+	if !ok {
+		return zero, fmt.Errorf("di: registration for %q is %T, not %s", keyFor[T](), v, keyFor[T]())
+	}
+	return typed, nil
+}
+
 // keyFor derives the default registration key for type T.
 // Pointer, slice, and other wrappers are unwound to the named element
 // type so *Service and Service share one stable, human-readable key.
@@ -299,6 +482,18 @@ func RegisterTransientAs[T any](c *Container, factory func(c *Container) (T, err
 		return v, nil
 	}
 	return c.RegisterTransient(keyFor[T](), wrapped)
+}
+
+// RegisterScopedAs registers a request-scoped factory under the key for T.
+func RegisterScopedAs[T any](c *Container, factory func(c *Container, ctx context.Context) (T, error)) error {
+	wrapped := func(c *Container, ctx context.Context) (any, error) {
+		v, err := factory(c, ctx)
+		if err != nil {
+			return nil, err
+		}
+		return v, nil
+	}
+	return c.RegisterScoped(keyFor[T](), wrapped)
 }
 
 // ResolveAs resolves the default key for T and type-asserts the result.
