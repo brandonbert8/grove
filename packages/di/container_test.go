@@ -2,7 +2,10 @@ package di
 
 import (
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestSingletonReturnsSameInstance(t *testing.T) {
@@ -119,5 +122,60 @@ func TestGenericHelpers(t *testing.T) {
 	n, err := ResolveAs[int](c)
 	if err != nil || n != 42 {
 		t.Fatalf("generic transient resolve = %d, %v", n, err)
+	}
+}
+
+// TestConcurrentResolveSameLazySingleton guards the P0 fix: concurrent
+// first-resolves of the same lazy singleton must not report a false
+// cycle and must coalesce through singleflight (factory runs once).
+func TestConcurrentResolveSameLazySingleton(t *testing.T) {
+	c := New()
+	type svcInst struct{}
+	var calls int32
+	c.MustRegisterSingletonFactory("svc", func(c *Container) (any, error) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			time.Sleep(5 * time.Millisecond) // widen the race window
+		}
+		return &svcInst{}, nil
+	})
+	const n = 20
+	results := make([]error, n)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := c.Resolve("svc")
+			mu.Lock()
+			results[i] = err
+			mu.Unlock()
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range results {
+		if err != nil {
+			t.Errorf("resolve %d failed: %v", i, err)
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("factory should run exactly once, got %d", got)
+	}
+}
+
+// TestPanicInFactoryDoesNotWedge guards the P0 fix: a factory panic is
+// returned as an error and does not wedge the key for later resolves.
+func TestPanicInFactoryDoesNotWedge(t *testing.T) {
+	c := New()
+	c.MustRegisterSingletonFactory("boom", func(c *Container) (any, error) {
+		panic("kaboom")
+	})
+	if _, err := c.Resolve("boom"); err == nil {
+		t.Fatal("expected panic propagated as error")
+	}
+	// A subsequent resolve must retry (not block forever on a closed
+	// singleflight channel).
+	if _, err := c.Resolve("boom"); err == nil {
+		t.Fatal("expected panic propagated as error on retry")
 	}
 }

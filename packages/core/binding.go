@@ -1,6 +1,8 @@
 package grove
 
 import (
+	"net/http"
+
 	"github.com/brandonbert8/grove/packages/httperr"
 	"github.com/brandonbert8/grove/packages/router"
 	"github.com/brandonbert8/grove/packages/validate"
@@ -69,6 +71,9 @@ func HandleBodyOK[T any](fn BodyHandler[T]) router.HandlerFunc {
 // the default cap, then strict tag validation.
 func decodeStrictBody(c router.Context, v any) error {
 	if err := c.Body(v); err != nil {
+		if router.IsBodyTooLarge(err) {
+			return httperr.New(http.StatusRequestEntityTooLarge, err.Error())
+		}
 		return httperr.BadRequest("invalid request body: " + err.Error())
 	}
 	if ferrs := validate.ValidateStrict(v); len(ferrs) > 0 {

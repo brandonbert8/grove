@@ -31,19 +31,13 @@ type entry struct {
 	scoped   func(c *Container, ctx context.Context) (any, error)
 }
 
-// Container is a minimal dependency injection container.
-//
-// It supports singleton and transient lifetimes with explicit constructor
-// injection. Resolve paths are protected by a mutex plus per-name
-// singleflight so a single Container is safe for concurrent use and a
-// lazy singleton factory runs exactly once even under contention.
-//
-// The zero value is not usable; construct with New.
-type Container struct {
-	mu        sync.Mutex
-	entries   map[string]*entry
-	resolving map[string]bool
-	inflight  map[string]*buildCall
+// containerState is the mutex-protected core shared by every copy of a
+// Container. Copies are made per resolution call so each call carries its
+// own chain without poisoning sibling goroutines.
+type containerState struct {
+	mu       sync.Mutex
+	entries  map[string]*entry
+	inflight map[string]*buildCall
 }
 
 // buildCall coalesces concurrent first-resolves of one lazy singleton.
@@ -53,12 +47,37 @@ type buildCall struct {
 	err  error
 }
 
+// Container is a minimal dependency injection container.
+//
+// It supports singleton and transient lifetimes with explicit constructor
+// injection. Every Resolve hands factories a shallow copy of the
+// Container that shares containerState but carries its own resolution
+// chain: cycles are detected per call chain instead of per container,
+// so concurrent first-resolves of the same key never falsely report a
+// cycle and instead coalesce through singleflight.
+//
+// The zero value is not usable; construct with New.
+type Container struct {
+	state *containerState
+	chain []string
+}
+
+// child returns a shallow copy of c whose resolution chain is extended
+// with name. Factories receive this copy so a factory that re-resolves
+// itself is detected as a cycle while concurrent goroutines are not.
+func (c *Container) child(name string) *Container {
+	child := *c
+	child.chain = append(c.chain, name)
+	return &child
+}
+
 // New returns an empty Container.
 func New() *Container {
 	return &Container{
-		entries:   make(map[string]*entry),
-		resolving: make(map[string]bool),
-		inflight:  make(map[string]*buildCall),
+		state: &containerState{
+			entries:  make(map[string]*entry),
+			inflight: make(map[string]*buildCall),
+		},
 	}
 }
 
@@ -72,12 +91,12 @@ func (c *Container) RegisterSingleton(name string, instance any) error {
 	if instance == nil {
 		return fmt.Errorf("di: singleton %q instance must not be nil", name)
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, exists := c.entries[name]; exists {
+	c.state.mu.Lock()
+	defer c.state.mu.Unlock()
+	if _, exists := c.state.entries[name]; exists {
 		return fmt.Errorf("di: %q is already registered", name)
 	}
-	c.entries[name] = &entry{lifetime: Singleton, instance: instance}
+	c.state.entries[name] = &entry{lifetime: Singleton, instance: instance}
 	return nil
 }
 
@@ -85,9 +104,9 @@ func (c *Container) RegisterSingleton(name string, instance any) error {
 // (TestingModule.overrideProvider equivalent). Production wiring should
 // prefer Register*; Replace never fails.
 func (c *Container) Replace(name string, instance any) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.entries[name] = &entry{lifetime: Singleton, instance: instance}
+	c.state.mu.Lock()
+	defer c.state.mu.Unlock()
+	c.state.entries[name] = &entry{lifetime: Singleton, instance: instance}
 }
 
 // ReplaceAs upserts instance under the default key for T.
@@ -105,12 +124,12 @@ func (c *Container) RegisterTransient(name string, factory func(c *Container) (a
 	if factory == nil {
 		return fmt.Errorf("di: transient %q factory must not be nil", name)
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, exists := c.entries[name]; exists {
+	c.state.mu.Lock()
+	defer c.state.mu.Unlock()
+	if _, exists := c.state.entries[name]; exists {
 		return fmt.Errorf("di: %q is already registered", name)
 	}
-	c.entries[name] = &entry{lifetime: Transient, factory: factory}
+	c.state.entries[name] = &entry{lifetime: Transient, factory: factory}
 	return nil
 }
 
@@ -132,12 +151,12 @@ func (c *Container) RegisterSingletonFactory(name string, factory func(c *Contai
 	if factory == nil {
 		return fmt.Errorf("di: singleton %q factory must not be nil", name)
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, exists := c.entries[name]; exists {
+	c.state.mu.Lock()
+	defer c.state.mu.Unlock()
+	if _, exists := c.state.entries[name]; exists {
 		return fmt.Errorf("di: %q is already registered", name)
 	}
-	c.entries[name] = &entry{lifetime: Singleton, factory: factory}
+	c.state.entries[name] = &entry{lifetime: Singleton, factory: factory}
 	return nil
 }
 
@@ -166,12 +185,12 @@ func (c *Container) RegisterScoped(name string, factory func(c *Container, ctx c
 	if factory == nil {
 		return fmt.Errorf("di: scoped %q factory must not be nil", name)
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, exists := c.entries[name]; exists {
+	c.state.mu.Lock()
+	defer c.state.mu.Unlock()
+	if _, exists := c.state.entries[name]; exists {
 		return fmt.Errorf("di: %q is already registered", name)
 	}
-	c.entries[name] = &entry{lifetime: RequestScoped, scoped: factory}
+	c.state.entries[name] = &entry{lifetime: RequestScoped, scoped: factory}
 	return nil
 }
 
@@ -184,9 +203,9 @@ func (c *Container) MustRegisterScoped(name string, factory func(c *Container, c
 
 // Has reports whether name is registered.
 func (c *Container) Has(name string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_, ok := c.entries[name]
+	c.state.mu.Lock()
+	defer c.state.mu.Unlock()
+	_, ok := c.state.entries[name]
 	return ok
 }
 
@@ -196,35 +215,45 @@ func (c *Container) Has(name string) bool {
 // on each call. A circular resolution chain returns an error instead of
 // recursing forever. Concurrent first-resolves of one lazy singleton
 // coalesce: the factory runs once and all callers share the result.
+//
+// A panic inside a factory is recovered and returned as an error; it
+// never wedges the container for the key.
 func (c *Container) Resolve(name string) (any, error) {
-	c.mu.Lock()
-	e, ok := c.entries[name]
-	if !ok {
-		c.mu.Unlock()
-		return nil, fmt.Errorf("di: no registration for %q (did you add grove.Provide/Provide0 for it to ModuleDef.Providers, or import the module that provides it?)", name)
+	return c.resolve(name)
+}
+
+// resolve runs a resolution chain rooted at name. c.chain holds the keys
+// resolved so far in this chain; each nested resolve receives a child
+// copy with an extended chain.
+func (c *Container) resolve(name string) (any, error) {
+	// Cycle detection against this call's own chain. Because the chain is
+	// per call (not per container), two goroutines resolving the same key
+	// concurrently never falsely report a cycle.
+	for _, k := range c.chain {
+		if k == name {
+			return nil, fmt.Errorf("di: circular dependency detected for %q", name)
+		}
 	}
-	if c.resolving[name] {
-		c.mu.Unlock()
-		return nil, fmt.Errorf("di: circular dependency detected for %q", name)
+
+	state := c.state
+	state.mu.Lock()
+	e, ok := state.entries[name]
+	if !ok {
+		state.mu.Unlock()
+		return nil, fmt.Errorf("di: no registration for %q (did you add grove.Provide/Provide0 for it to ModuleDef.Providers, or import the module that provides it?)", name)
 	}
 	if e.lifetime == Singleton && e.factory == nil {
 		inst := e.instance
-		c.mu.Unlock()
+		state.mu.Unlock()
 		return inst, nil
 	}
 	if e.lifetime == Transient {
 		factory := e.factory
-		c.resolving[name] = true
-		c.mu.Unlock()
-		defer func() {
-			c.mu.Lock()
-			delete(c.resolving, name)
-			c.mu.Unlock()
-		}()
+		state.mu.Unlock()
 		if factory == nil {
 			return nil, fmt.Errorf("di: registration %q has no factory or instance", name)
 		}
-		inst, err := factory(c)
+		inst, err := factory(c.child(name))
 		if err != nil {
 			return nil, fmt.Errorf("di: factory for %q failed: %w", name, err)
 		}
@@ -234,12 +263,12 @@ func (c *Container) Resolve(name string) (any, error) {
 		return inst, nil
 	}
 	if e.lifetime == RequestScoped {
-		c.mu.Unlock()
+		state.mu.Unlock()
 		return nil, fmt.Errorf("di: %q is request-scoped: resolve it from di.Scope (grove.RequestScope middleware + grove.InjectRequest), not from the root container", name)
 	}
-	// Singleton with factory: singleflight.
-	if call, building := c.inflight[name]; building {
-		c.mu.Unlock()
+	// Singleton with factory: singleflight with panic-safe cleanup.
+	if call, building := state.inflight[name]; building {
+		state.mu.Unlock()
 		<-call.done
 		if call.err != nil {
 			return nil, call.err
@@ -247,21 +276,21 @@ func (c *Container) Resolve(name string) (any, error) {
 		return call.val, nil
 	}
 	call := &buildCall{done: make(chan struct{})}
-	c.inflight[name] = call
-	c.resolving[name] = true
+	state.inflight[name] = call
 	factory := e.factory
-	c.mu.Unlock()
+	state.mu.Unlock()
 
-	inst, err := func() (any, error) {
+	inst, err := func() (v any, err error) {
 		defer func() {
-			c.mu.Lock()
-			delete(c.resolving, name)
-			c.mu.Unlock()
+			if r := recover(); r != nil {
+				v = nil
+				err = fmt.Errorf("di: factory for %q panicked: %v", name, r)
+			}
 		}()
 		if factory == nil {
 			return nil, fmt.Errorf("di: registration %q has no factory or instance", name)
 		}
-		v, ferr := factory(c)
+		v, ferr := factory(c.child(name))
 		if ferr != nil {
 			return nil, fmt.Errorf("di: factory for %q failed: %w", name, ferr)
 		}
@@ -271,15 +300,15 @@ func (c *Container) Resolve(name string) (any, error) {
 		return v, nil
 	}()
 
-	c.mu.Lock()
+	state.mu.Lock()
 	if err == nil {
 		e.instance = inst
 		e.factory = nil // cache: later resolves skip the factory
 	}
 	call.val, call.err = inst, err
-	delete(c.inflight, name)
+	delete(state.inflight, name)
 	close(call.done)
-	c.mu.Unlock()
+	state.mu.Unlock()
 	return inst, err
 }
 
@@ -299,13 +328,16 @@ type scopeKey struct{}
 // Singletons and transients delegate to the parent; request-scoped
 // values are built once per Scope and cached. One Scope per request;
 // never share across requests. Close releases io.Closers built in it.
+//
+// Cycle detection is delegated to the per-call resolution chain carried
+// by Container child copies, so Scope does not keep its own resolving
+// map (that previously produced false cycle errors under concurrency).
 type Scope struct {
-	parent    *Container
-	ctx       context.Context
-	mu        sync.Mutex
-	cache     map[string]any
-	resolving map[string]bool
-	closers   []io.Closer
+	parent  *Container
+	ctx     context.Context
+	mu      sync.Mutex
+	cache   map[string]any
+	closers []io.Closer
 }
 
 // ScopeOf derives a per-request Scope bound to ctx.
@@ -313,7 +345,7 @@ func (c *Container) Scope(ctx context.Context) *Scope {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return &Scope{parent: c, ctx: ctx, cache: make(map[string]any), resolving: make(map[string]bool)}
+	return &Scope{parent: c, ctx: ctx, cache: make(map[string]any)}
 }
 
 // Context returns the request context the Scope was created with.
@@ -351,15 +383,11 @@ func (s *Scope) Resolve(name string) (any, error) {
 		s.mu.Unlock()
 		return v, nil
 	}
-	if s.resolving[name] {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("di: circular scoped dependency detected for %q", name)
-	}
 	s.mu.Unlock()
 
-	s.parent.mu.Lock()
-	e, ok := s.parent.entries[name]
-	s.parent.mu.Unlock()
+	s.parent.state.mu.Lock()
+	e, ok := s.parent.state.entries[name]
+	s.parent.state.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("di: no registration for %q (did you add grove.Provide/ProvideRequest for it?)", name)
 	}
@@ -367,18 +395,15 @@ func (s *Scope) Resolve(name string) (any, error) {
 	case Singleton, Transient:
 		return s.parent.Resolve(name)
 	case RequestScoped:
-		s.mu.Lock()
-		s.resolving[name] = true
-		s.mu.Unlock()
-		defer func() {
-			s.mu.Lock()
-			delete(s.resolving, name)
-			s.mu.Unlock()
-		}()
 		if e.scoped == nil {
 			return nil, fmt.Errorf("di: scoped registration %q has no factory", name)
 		}
-		v, err := e.scoped(s.parent, s.Context())
+		// Child of the parent carries the chain so a scoped factory that
+		// re-resolves itself (directly or through the parent) is detected
+		// as a cycle instead of recursing forever.
+		child := *s.parent
+		child.chain = append(s.parent.chain, name)
+		v, err := e.scoped(&child, s.Context())
 		if err != nil {
 			return nil, fmt.Errorf("di: scoped factory for %q failed: %w", name, err)
 		}

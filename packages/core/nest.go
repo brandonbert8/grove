@@ -311,6 +311,15 @@ func (m *ModuleDef) Register(app *App) error {
 	if app.builtModules[m] {
 		return nil
 	}
+	// Marcar temprano evita reingreso por imports cíclicos, pero si el
+	// registro falla (proveedor/controlador mal formado) se deshace la
+	// marca para que un reintento pueda registrar el módulo.
+	moduleRegistered := false
+	defer func() {
+		if !moduleRegistered {
+			delete(app.builtModules, m)
+		}
+	}()
 	app.builtModules[m] = true
 	if m.Global {
 		app.globalModules[m] = true
@@ -378,6 +387,7 @@ func (m *ModuleDef) Register(app *App) error {
 			app.mountController(c)
 		}
 	}
+	moduleRegistered = true
 	return nil
 }
 

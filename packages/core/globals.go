@@ -170,8 +170,21 @@ type captureWriter struct {
 // Header returns the private header map.
 func (w *captureWriter) Header() http.Header { return w.header }
 
-// Wrote reports whether headers were committed (for Recovery checks).
-func (w *captureWriter) Wrote() bool { return w.wroteHeader && w.streamed }
+// Wrote reports whether bytes were committed to the wire (streamed).
+// When false the body is still buffered in memory and can be replaced
+// by Reset (used by Recovery to write a 500 over a buffered response).
+func (w *captureWriter) Wrote() bool { return w.streamed }
+
+// Reset clears the captured status/body so a different response can be
+// written in its place. Safe only when Wrote() is false (nothing live
+// on the wire yet).
+func (w *captureWriter) Reset() {
+	w.wroteHeader = false
+	w.wrote = false
+	w.streamed = false
+	w.status = 0
+	w.body.Reset()
+}
 
 // WriteHeader records the status code.
 func (w *captureWriter) WriteHeader(status int) {

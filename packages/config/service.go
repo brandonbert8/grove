@@ -2,66 +2,55 @@ package config
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 )
 
-// Get returns the merged value for key (exact env name, e.g. "PORT").
-// Known keys map onto the typed Config; custom keys read the same merged
-// view (.env + process env + overrides), so custom .env vars are visible.
+// Get returns the merged value for key (.env + process env + overrides)
+// and ok=true only when the key was explicitly set. Defaults (from
+// config.Load / defaults) are NOT reported as set — use GetOr for a
+// fallback. Lookup is case-insensitive and covers every known-alias form
+// (e.g. "PORT" and "GROVE_PORT" are equivalent).
 func Get(key string, opts ...Option) (string, bool) {
 	merged, err := Merged(opts...)
 	if err != nil {
 		return "", false
 	}
+	// Case-insensitive view: .env may use lowercase, overrides are upper,
+	// process env is usually upper. Normalize once.
+	upperMerged := make(map[string]string, len(merged))
+	for k, v := range merged {
+		upperMerged[strings.ToUpper(k)] = strings.TrimSpace(v)
+	}
 	upper := strings.ToUpper(strings.TrimSpace(key))
-	if v, ok := merged[upper]; ok && strings.TrimSpace(v) != "" {
-		// Normalize through the typed config for known keys so PORT
-		// validation and ENV lower-casing apply uniformly.
-		cfg, err := Load(opts...)
-		if err != nil {
-			return strings.TrimSpace(v), true
+	for _, n := range aliasNames(upper) {
+		if v, ok := upperMerged[n]; ok && v != "" {
+			return v, true
 		}
-		switch upper {
-		case "APP_NAME", "GROVE_APP_NAME":
-			return cfg.AppName, true
-		case "ENV", "GROVE_ENV", "GO_ENV", "APP_ENV":
-			return cfg.Env, true
-		case "HOST", "GROVE_HOST":
-			return cfg.Host, cfg.Host != ""
-		case "PORT", "GROVE_PORT":
-			return strconv.Itoa(cfg.Port), true
-		case "DATABASE_URL", "GROVE_DATABASE_URL":
-			return cfg.DatabaseURL, cfg.DatabaseURL != ""
-		case "LOG_LEVEL", "GROVE_LOG_LEVEL":
-			return cfg.LogLevel, true
-		case "JWT_SECRET", "GROVE_JWT_SECRET":
-			return cfg.JWTSecret, cfg.JWTSecret != ""
-		}
-		return strings.TrimSpace(v), true
-	}
-	// Case-insensitive alias lookup for known keys set under aliases.
-	cfg, err := Load(opts...)
-	if err != nil {
-		return "", false
-	}
-	switch upper {
-	case "APP_NAME":
-		return cfg.AppName, true
-	case "ENV":
-		return cfg.Env, true
-	case "HOST":
-		return cfg.Host, cfg.Host != ""
-	case "PORT":
-		return strconv.Itoa(cfg.Port), true
-	case "DATABASE_URL":
-		return cfg.DatabaseURL, cfg.DatabaseURL != ""
-	case "LOG_LEVEL":
-		return cfg.LogLevel, true
-	case "JWT_SECRET":
-		return cfg.JWTSecret, cfg.JWTSecret != ""
 	}
 	return "", false
+}
+
+// aliasNames returns every env-name form for a known config key so
+// GROVE_-prefixed and bare names are equivalent.
+func aliasNames(upper string) []string {
+	switch upper {
+	case "APP_NAME", "GROVE_APP_NAME":
+		return []string{"APP_NAME", "GROVE_APP_NAME"}
+	case "ENV", "GROVE_ENV", "GO_ENV", "APP_ENV":
+		return []string{"ENV", "GROVE_ENV", "GO_ENV", "APP_ENV"}
+	case "HOST", "GROVE_HOST":
+		return []string{"HOST", "GROVE_HOST"}
+	case "PORT", "GROVE_PORT":
+		return []string{"PORT", "GROVE_PORT"}
+	case "DATABASE_URL", "GROVE_DATABASE_URL":
+		return []string{"DATABASE_URL", "GROVE_DATABASE_URL"}
+	case "LOG_LEVEL", "GROVE_LOG_LEVEL":
+		return []string{"LOG_LEVEL", "GROVE_LOG_LEVEL"}
+	case "JWT_SECRET", "GROVE_JWT_SECRET":
+		return []string{"JWT_SECRET", "GROVE_JWT_SECRET"}
+	default:
+		return []string{upper}
+	}
 }
 
 // MustGet returns Get or panics (fail-fast for required secrets).
