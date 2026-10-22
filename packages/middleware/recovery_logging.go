@@ -30,11 +30,19 @@ func Recovery(log logger.Logger) router.Middleware {
 						"request_id", GetRequestID(c),
 						"stack", string(debug.Stack()),
 					)
-					// If headers were already committed, a 500 body
-					// would be a corrupting double-write: log only.
-					if w, ok := c.ResponseWriter().(interface{ Wrote() bool }); ok && w.Wrote() {
+					// If headers were already committed to the wire, a
+					// 500 body would be a corrupting double-write: log
+					// only. If the body is buffered (captureWriter),
+					// replace it with the 500 envelope instead.
+					if rw, ok := c.ResponseWriter().(interface {
+						Wrote() bool
+						Reset()
+					}); ok && rw.Wrote() {
 						err = nil
 						return
+					}
+					if rw, ok := c.ResponseWriter().(interface{ Reset() }); ok {
+						rw.Reset()
 					}
 					err = c.JSON(http.StatusInternalServerError, map[string]string{
 						"error": "internal server error",
@@ -95,3 +103,13 @@ type writerSwapContext struct {
 
 // ResponseWriter returns the recording writer.
 func (c *writerSwapContext) ResponseWriter() http.ResponseWriter { return c.writer }
+
+// SetRequest forwards to the underlying context when it supports it,
+// falling back to in-place mutation (matching setRequest semantics).
+func (c *writerSwapContext) SetRequest(r *http.Request) {
+	if sr, ok := c.Context.(interface{ SetRequest(*http.Request) }); ok {
+		sr.SetRequest(r)
+		return
+	}
+	*c.Context.Request() = *r
+}

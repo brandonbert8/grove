@@ -22,10 +22,12 @@ func AuthGuard(svc *Service) router.Middleware {
 	return grove.UseGuard(grove.GuardFunc(func(c router.Context) error {
 		token, ok := bearerToken(c.Header("Authorization"))
 		if !ok {
+			c.ResponseWriter().Header().Set("WWW-Authenticate", `Bearer realm="grove"`)
 			return grove.Unauthorized("invalid credentials")
 		}
 		claims, err := svc.Verify(token)
 		if err != nil {
+			c.ResponseWriter().Header().Set("WWW-Authenticate", `Bearer realm="grove"`)
 			return grove.Unauthorized("invalid credentials")
 		}
 		// Attach claims without mutating a shared *http.Request in

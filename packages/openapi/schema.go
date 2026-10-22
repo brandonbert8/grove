@@ -24,6 +24,10 @@ func SchemaFor[T any]() JSONSchema {
 }
 
 func schemaOf(t reflect.Type) JSONSchema {
+	if t == nil {
+		// SchemaFor[any]() / an untyped interface: no concrete shape.
+		return JSONSchema{"type": "object"}
+	}
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -70,43 +74,41 @@ func jsonFieldName(f reflect.StructField) (string, bool) {
 }
 
 func fieldSchema(f reflect.StructField) JSONSchema {
-	t := f.Type
+	orig := f.Type
+	isPtr := orig.Kind() == reflect.Pointer
+	t := orig
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	var base string
+	var s JSONSchema
 	switch t.Kind() {
 	case reflect.String:
-		base = "string"
+		s = JSONSchema{"type": "string"}
 	case reflect.Bool:
-		base = "boolean"
+		s = JSONSchema{"type": "boolean"}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
 		reflect.Float32, reflect.Float64:
 		if strings.Contains(f.Tag.Get("validate"), "email") {
-			base = "string"
-			break
+			s = JSONSchema{"type": "string"}
+		} else {
+			s = JSONSchema{"type": kindNumeric(t.Kind())}
 		}
-		base = kindNumeric(t.Kind())
 	case reflect.Slice, reflect.Array:
-		items := JSONSchema{"type": goKindToJSON(t.Elem().Kind().String())}
-		s := JSONSchema{"type": "array", "items": items}
-		applyValidateConstraints(s, f.Tag.Get("validate"))
-		if d := f.Tag.Get("description"); d != "" {
-			s["description"] = d
-		}
-		return s
+		// Items keep their concrete shape (a []User emits the User object
+		// schema, not just {"type":"object"}).
+		s = JSONSchema{"type": "array", "items": schemaOf(t.Elem())}
 	case reflect.Struct:
 		if t.PkgPath() == "time" && t.Name() == "Time" {
-			return JSONSchema{"type": "string", "format": "date-time"}
+			s = JSONSchema{"type": "string", "format": "date-time"}
+		} else {
+			s = schemaOf(t)
 		}
-		nested := schemaOf(t)
-		applyValidateConstraints(nested, f.Tag.Get("validate"))
-		return nested
+	case reflect.Map:
+		s = JSONSchema{"type": "object", "additionalProperties": schemaOf(t.Elem())}
 	default:
-		base = "string"
+		s = JSONSchema{"type": "string"}
 	}
-	s := JSONSchema{"type": base}
 	applyValidateConstraints(s, f.Tag.Get("validate"))
 	if v := f.Tag.Get("validate"); strings.Contains(v, "email") {
 		s["format"] = "email"
@@ -119,6 +121,12 @@ func fieldSchema(f reflect.StructField) JSONSchema {
 	}
 	if d := f.Tag.Get("description"); d != "" {
 		s["description"] = d
+	}
+	// Nullable pointer: OpenAPI 3.1 expresses optional-null as an array type.
+	if isPtr {
+		if typ, ok := s["type"].(string); ok {
+			s["type"] = []any{typ, "null"}
+		}
 	}
 	return s
 }

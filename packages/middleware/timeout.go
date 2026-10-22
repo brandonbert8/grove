@@ -2,7 +2,9 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -18,6 +20,11 @@ import (
 // synchronized, so -race stays green when the straggler writes late.
 // Caveat: the writer is not an http.Hijacker/Flusher — keep Timeout off
 // SSE/hijack routes and scope it per group or route instead of global.
+//
+// Panic safety: a panic inside the handler runs on a separate goroutine.
+// Timeout recovers it, sends it back on the request goroutine as a
+// panicWithStack, so an outermost Recovery catches it with the original
+// stack trace instead of crashing the process.
 func Timeout(d time.Duration) router.Middleware {
 	if d <= 0 {
 		return func(next router.HandlerFunc) router.HandlerFunc { return next }
@@ -31,10 +38,23 @@ func Timeout(d time.Duration) router.Middleware {
 			tw := &timeoutWriter{w: c.ResponseWriter(), h: make(http.Header)}
 			wc := &writerSwapContext{Context: c, writer: tw}
 			done := make(chan error, 1)
-			go func() { done <- next(wc) }()
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						done <- panicWithStack{value: r, stack: string(debug.Stack())}
+					}
+				}()
+				done <- next(wc)
+			}()
 
 			select {
 			case err := <-done:
+				if pws, ok := err.(panicWithStack); ok {
+					// Re-panic on the request goroutine so the outermost
+					// Recovery (which wraps Timeout) catches it and logs
+					// the real stack captured at the original panic site.
+					panic(pws)
+				}
 				return err
 			case <-ctx.Done():
 				tw.expire()
@@ -55,6 +75,19 @@ func Timeout(d time.Duration) router.Middleware {
 		}
 	}
 }
+
+// panicWithStack carries a recovered panic value together with the stack
+// captured at the original panic site, so an outer Recovery can log the
+// real stack instead of the re-panic point.
+type panicWithStack struct {
+	value any
+	stack string
+}
+
+func (p panicWithStack) Error() string { return fmt.Sprintf("%v", p.value) }
+
+// Stack returns the stack trace captured at the original panic site.
+func (p panicWithStack) Stack() string { return p.stack }
 
 // timeoutWriter buffers handler headers privately and drops everything
 // after expiry under a mutex, so a late handler can neither corrupt

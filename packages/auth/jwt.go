@@ -27,6 +27,9 @@ const (
 type Claims struct {
 	// Subject identifies the principal (user id, client id).
 	Subject string `json:"sub"`
+	// Issuer identifies the token issuer, enforced on verification when
+	// the service was built with a non-empty issuer.
+	Issuer string `json:"iss,omitempty"`
 	// IssuedAt and ExpiresAt are Unix seconds.
 	IssuedAt  int64 `json:"iat"`
 	ExpiresAt int64 `json:"exp"`
@@ -209,6 +212,11 @@ func newTokenID() (string, error) {
 
 // signClaims signs prebuilt claims.
 func (s *Service) signClaims(c Claims) (string, error) {
+	// Bind the service issuer into every token so verification can bind
+	// tokens to this issuer (no cross-issuer acceptance).
+	if s.issuer != "" {
+		c.Issuer = s.issuer
+	}
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 	body, err := json.Marshal(c)
 	if err != nil {
@@ -298,6 +306,12 @@ func (s *Service) verify(token string) (Claims, error) {
 	}
 	if !c.Valid() {
 		return zero, fmt.Errorf("auth: token expired or invalid")
+	}
+	// Bind tokens to this service's issuer: a token minted by a
+	// different issuer (or a service rotated to a new issuer) is
+	// rejected, so issuer rotation is a revocation mechanism.
+	if s.issuer != "" && c.Issuer != s.issuer {
+		return zero, fmt.Errorf("auth: token issuer mismatch")
 	}
 	return c, nil
 }

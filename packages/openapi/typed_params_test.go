@@ -28,7 +28,7 @@ func TestTypedPathParams(t *testing.T) {
 	for _, p := range pathParams("/users/{id}/orgs/{oid:[0-9]+}/repos/{repo}") {
 		got[p.Name] = p.Schema["type"]
 	}
-	if got["id"] != "integer" || got["oid"] != "integer" || got["repo"] != "string" {
+	if got["id"] != "string" || got["oid"] != "integer" || got["repo"] != "string" {
 		t.Fatalf("unexpected path types: %v", got)
 	}
 }

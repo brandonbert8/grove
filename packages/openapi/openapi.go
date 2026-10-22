@@ -77,11 +77,22 @@ type SecurityScheme struct {
 	BearerFormat string `json:"bearerFormat,omitempty"`
 }
 
-// knownSchemes are the security scheme names Grove understands.
-// Operations referencing other names still list them; the app owns
-// their components definition via custom spec assembly.
+// knownSchemes are the security scheme names Grove understands out of the
+// box. Operations referencing other names still list them; register custom
+// schemes with RegisterSecurityScheme so they are emitted under
+// components.securitySchemes instead of dangling.
 var knownSchemes = map[string]SecurityScheme{
 	"bearerAuth": {Type: "http", Scheme: "bearer", BearerFormat: "JWT"},
+}
+
+// extraSchemes holds security schemes registered via RegisterSecurityScheme.
+var extraSchemes = map[string]SecurityScheme{}
+
+// RegisterSecurityScheme registers a custom security scheme (apiKey,
+// oauth2, openIdConnect, bearer variants) so Build emits it under
+// components.securitySchemes instead of leaving a dangling reference.
+func RegisterSecurityScheme(name string, scheme SecurityScheme) {
+	extraSchemes[name] = scheme
 }
 
 // Spec is an OpenAPI 3.1 document.
@@ -156,7 +167,11 @@ func Build(app *grove.App, info Info) Spec {
 				continue
 			}
 			security = append(security, map[string][]string{name: {}})
-			if scheme, ok := knownSchemes[name]; ok {
+			scheme, ok := knownSchemes[name]
+			if !ok {
+				scheme, ok = extraSchemes[name]
+			}
+			if ok {
 				if s.Components == nil {
 					s.Components = map[string]any{}
 				}
@@ -260,9 +275,10 @@ func pathParams(path string) []Parameter {
 				if strings.Contains(constraint, "[0-9]") || strings.Contains(constraint, "\\d") {
 					typ = "integer"
 				}
-			} else if name == "id" || strings.HasSuffix(name, "_id") || strings.HasSuffix(name, "Id") {
-				typ = "integer"
 			}
+			// id-like names are NOT assumed integer: a {id} is commonly a
+			// UUID or opaque string. Only numeric chi constraints render
+			// as integer; everything else stays string.
 			if name != "" && name != "*" {
 				out = append(out, Parameter{
 					Name:     name,

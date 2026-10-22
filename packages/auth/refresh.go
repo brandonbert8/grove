@@ -9,22 +9,26 @@ import (
 
 // RefreshStore tracks live refresh-token ids for rotation. Consume is
 // single-use: redeeming deletes the id, so a replayed refresh token is
-// rejected — the theft signal. Implement it on Redis/DB for replicas;
-// MemoryRefreshStore covers single-process apps and tests.
+// rejected — the theft signal. Revoke drops all of a subject's tokens
+// (used on replay compromise and logout). Implement it on Redis/DB for
+// replicas; MemoryRefreshStore covers single-process apps and tests.
 type RefreshStore interface {
 	// Store records id for subject until expires.
 	Store(ctx context.Context, id, subject string, expires time.Time) error
 	// Consume deletes id, returning its subject when live. Replays and
 	// unknown ids report ok=false.
 	Consume(ctx context.Context, id string) (subject string, ok bool)
+	// Revoke deletes every tracked token for subject.
+	Revoke(ctx context.Context, subject string) error
 }
 
 // Rotate redeems a refresh token for a fresh pair: it verifies the
 // token, issues the next pair carrying the same extra claims, stores
 // the new jti, then consumes the old jti (single-use). Issuing before
 // consuming avoids orphaning the session when the store briefly fails.
-// A reused refresh token fails here — treat that as compromise and
-// revoke the subject's sessions.
+// A reused refresh token fails here — treat that as compromise: the
+// just-issued refresh token is revoked along with the subject's other
+// sessions, so no orphan credential survives.
 func Rotate(ctx context.Context, svc *Service, store RefreshStore, refreshToken string) (TokenPair, error) {
 	var zero TokenPair
 	claims, err := svc.VerifyRefresh(refreshToken)
@@ -40,6 +44,9 @@ func Rotate(ctx context.Context, svc *Service, store RefreshStore, refreshToken 
 	}
 	sub, ok := store.Consume(ctx, claims.ID)
 	if !ok {
+		// Replay = compromise: revoke the subject's sessions so the
+		// just-issued (orphan) refresh token cannot be used.
+		_ = store.Revoke(ctx, claims.Subject)
 		return zero, fmt.Errorf("auth: unknown or reused refresh token")
 	}
 	if sub != claims.Subject {
@@ -109,4 +116,16 @@ func (s *MemoryRefreshStore) Consume(_ context.Context, id string) (string, bool
 		return "", false
 	}
 	return e.subject, true
+}
+
+// Revoke deletes every tracked refresh token for subject.
+func (s *MemoryRefreshStore) Revoke(_ context.Context, subject string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, e := range s.entries {
+		if e.subject == subject {
+			delete(s.entries, id)
+		}
+	}
+	return nil
 }
