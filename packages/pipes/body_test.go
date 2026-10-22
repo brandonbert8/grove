@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	grove "github.com/brandonbert8/grove/packages/core"
+	httperr "github.com/brandonbert8/grove/packages/httperr"
 	"github.com/brandonbert8/grove/packages/router"
 )
 
@@ -34,13 +34,13 @@ func TestBodyValidationErrors(t *testing.T) {
 	// Malformed JSON is 400.
 	if _, err := Body[bodyDTO](bodyCtx(t, `{oops`)); err == nil {
 		t.Fatal("malformed JSON must fail")
-	} else if he, ok := grove.AsHttpError(err); !ok || he.StatusCode() != 400 {
+	} else if 	he, ok := httperr.As(err); !ok || he.StatusCode() != 400 {
 		t.Fatalf("malformed must be 400, got %v", err)
 	}
 	// Rule violation is 422 with field details.
 	if _, err := Body[bodyDTO](bodyCtx(t, `{"name":"x"}`)); err == nil {
 		t.Fatal("short name must fail")
-	} else if he, ok := grove.AsHttpError(err); !ok || he.StatusCode() != 422 {
+	} else if 	he, ok := httperr.As(err); !ok || he.StatusCode() != 422 {
 		t.Fatalf("violation must be 422, got %v", err)
 	}
 }
@@ -52,12 +52,12 @@ func TestBodyStrictFlagsUnknownRules(t *testing.T) {
 	// v0.3: Body is strict by default (fail-closed on unknown rules).
 	if _, err := Body[odd](bodyCtx(t, `{"x":"y"}`)); err == nil {
 		t.Fatal("default Body must flag unknown rules (strict by default)")
-	} else if he, ok := grove.AsHttpError(err); !ok || he.StatusCode() != 422 {
+	} else if 	he, ok := httperr.As(err); !ok || he.StatusCode() != 422 {
 		t.Fatalf("strict violation must be 422, got %v", err)
 	}
 	if _, err := Body[odd](bodyCtx(t, `{"x":"y"}`), Strict()); err == nil {
 		t.Fatal("strict Body must flag unknown rules")
-	} else if he, ok := grove.AsHttpError(err); !ok || he.StatusCode() != 422 {
+	} else if 	he, ok := httperr.As(err); !ok || he.StatusCode() != 422 {
 		t.Fatalf("strict violation must be 422, got %v", err)
 	}
 	if _, err := Body[odd](bodyCtx(t, `{"x":"y"}`), Lenient()); err != nil {

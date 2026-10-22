@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	grove "github.com/brandonbert8/grove/packages/core"
+	httperr "github.com/brandonbert8/grove/packages/httperr"
 	"github.com/brandonbert8/grove/packages/router"
 )
 
@@ -44,13 +44,13 @@ func TestBindHeader(t *testing.T) {
 	// Absent required header is 422; malformed value is 400.
 	if err := BindHeader(headerCtx(t, nil), &traceCtx{}); err == nil {
 		t.Fatal("missing required header must fail")
-	} else if he, ok := grove.AsHttpError(err); !ok || he.StatusCode() != 422 {
+	} else if 	he, ok := httperr.As(err); !ok || he.StatusCode() != 422 {
 		t.Fatalf("missing header must be 422, got %v", err)
 	}
 	var v3 traceCtx
 	if err := BindHeader(headerCtx(t, map[string]string{"X-Request-ID": "a", "X-Retries": "many"}), &v3); err == nil {
 		t.Fatal("malformed header must 400")
-	} else if he, ok := grove.AsHttpError(err); !ok || he.StatusCode() != 400 {
+	} else if 	he, ok := httperr.As(err); !ok || he.StatusCode() != 400 {
 		t.Fatalf("malformed header must be 400, got %v", err)
 	}
 }
@@ -77,7 +77,7 @@ func TestParsePage(t *testing.T) {
 	}
 	if _, err := ParsePage(mk("/x?page=many"), 100); err == nil {
 		t.Fatal("malformed page must 400")
-	} else if he, ok := grove.AsHttpError(err); !ok || he.StatusCode() != 400 {
+	} else if 	he, ok := httperr.As(err); !ok || he.StatusCode() != 400 {
 		t.Fatalf("malformed page must be 400, got %v", err)
 	}
 }
@@ -108,7 +108,7 @@ func TestBindPath(t *testing.T) {
 	var missing userParams
 	if err := BindPath(pathCtx(t, "/x", "/x", nil), &missing); err == nil {
 		t.Fatal("missing path param must 400")
-	} else if he, ok := grove.AsHttpError(err); !ok || he.StatusCode() != 400 {
+	} else if 	he, ok := httperr.As(err); !ok || he.StatusCode() != 400 {
 		t.Fatalf("missing must be 400, got %v", err)
 	}
 	var bad userParams
@@ -118,7 +118,7 @@ func TestBindPath(t *testing.T) {
 	var zero userParams
 	if err := BindPath(pathCtx(t, "/x", "/x", map[string]string{"id": "0"}), &zero); err == nil {
 		t.Fatal("rule violation must 422")
-	} else if he, ok := grove.AsHttpError(err); !ok || he.StatusCode() != 422 {
+	} else if 	he, ok := httperr.As(err); !ok || he.StatusCode() != 422 {
 		t.Fatalf("violation must be 422, got %v", err)
 	}
 }

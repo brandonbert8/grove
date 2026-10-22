@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	grove "github.com/brandonbert8/grove/packages/core"
+	httperr "github.com/brandonbert8/grove/packages/httperr"
 	"github.com/brandonbert8/grove/packages/router"
 )
 
@@ -80,7 +80,7 @@ func TestValidateBodyBadJSON(t *testing.T) {
 	c := router.NewContext(httptest.NewRecorder(), req)
 	var v signup
 	err := ValidateBody(c, &v)
-	he, ok := grove.AsHttpError(err)
+	he, ok := httperr.As(err)
 	if !ok || he.StatusCode() != 400 {
 		t.Fatalf("expected 400 HttpError, got %v", err)
 	}
@@ -91,7 +91,7 @@ func TestValidateBodyUnprocessable(t *testing.T) {
 	c := router.NewContext(httptest.NewRecorder(), req)
 	var v signup
 	err := ValidateBody(c, &v)
-	he, ok := grove.AsHttpError(err)
+	he, ok := httperr.As(err)
 	if !ok || he.StatusCode() != 422 {
 		t.Fatalf("expected 422 HttpError, got %v", err)
 	}
@@ -120,7 +120,7 @@ func TestBindQueryValidationFails(t *testing.T) {
 	c := router.NewContext(httptest.NewRecorder(), req)
 	var q listQuery
 	err := BindQuery(c, &q)
-	he, ok := grove.AsHttpError(err)
+	he, ok := httperr.As(err)
 	if !ok || he.StatusCode() != 422 {
 		t.Fatalf("expected 422 HttpError, got %v", err)
 	}

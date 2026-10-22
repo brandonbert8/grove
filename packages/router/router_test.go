@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -105,5 +106,46 @@ func TestHandlerErrorBecomes500(t *testing.T) {
 	rec := doRequest(t, r, "GET", "/fail")
 	if rec.Code != 500 {
 		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+}
+
+// TestOversizedBodyIs413 guards the P1 fix: a request body larger than the
+// cap yields 413 Payload Too Large (not 400).
+func TestOversizedBodyIs413(t *testing.T) {
+	r := New()
+	r.POST("/upload", func(c Context) error {
+		var v struct {
+			Data string `json:"data"`
+		}
+		if err := c.Body(&v); err != nil {
+			return err
+		}
+		return c.String(200, "ok")
+	})
+	big := strings.Repeat("a", 2*1024*1024) // 2 MiB > 1 MiB cap
+	req := httptest.NewRequest("POST", "/upload", strings.NewReader(big))
+	req.ContentLength = int64(len(big))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", rec.Code)
+	}
+}
+
+// TestMethodNotAllowedIncludesAllowHeader guards the P1 fix: a 405
+// advertises the valid methods in an Allow header (RFC 9110 §15.5.6).
+func TestMethodNotAllowedIncludesAllowHeader(t *testing.T) {
+	r := New()
+	r.GET("/foo", func(c Context) error { return c.String(200, "ok") })
+	rec := doRequest(t, r, "POST", "/foo")
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+	allow := rec.Header().Get("Allow")
+	if allow == "" {
+		t.Fatal("missing Allow header on 405")
+	}
+	if !strings.Contains(allow, "GET") {
+		t.Errorf("Allow = %q, want GET", allow)
 	}
 }

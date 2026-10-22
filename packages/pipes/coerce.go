@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"reflect"
 
-	grove "github.com/brandonbert8/grove/packages/core"
+	httperr "github.com/brandonbert8/grove/packages/httperr"
 	"github.com/brandonbert8/grove/packages/router"
 )
 
@@ -34,18 +34,18 @@ func Parse[T Value](s string) (T, error) {
 }
 
 // Path reads the Chi path parameter name and coerces it into T,
-// returning a 400 *grove.HttpError when absent or unparsable:
+// returning a 400 *httperr.HttpError when absent or unparsable:
 //
 //	page, err := pipes.Path[int](c, "page")
 func Path[T Value](c router.Context, name string) (T, error) {
 	var zero T
 	raw := c.Param(name)
 	if raw == "" {
-		return zero, grove.BadRequest(fmt.Sprintf("missing path parameter %q", name))
+		return zero, httperr.BadRequest(fmt.Sprintf("missing path parameter %q", name))
 	}
 	v, err := Parse[T](raw)
 	if err != nil {
-		return zero, grove.BadRequest(
+		return zero, httperr.BadRequest(
 			fmt.Sprintf("invalid path parameter %q: want %s", name, typeName[T]()))
 	}
 	return v, nil
@@ -53,7 +53,7 @@ func Path[T Value](c router.Context, name string) (T, error) {
 
 // Query reads query parameter name with a DefaultValuePipe-style
 // fallback: absent means fallback (no error); present-but-malformed is
-// a 400 *grove.HttpError. Presence is exact (?limit= is present-but-empty
+// a 400 *httperr.HttpError. Presence is exact (?limit= is present-but-empty
 // and fails for numeric targets instead of silently using the fallback).
 //
 //	limit, err := pipes.Query(c, "limit", 20)
@@ -65,7 +65,7 @@ func Query[T Value](c router.Context, name string, fallback T) (T, error) {
 	v, err := Parse[T](raw)
 	if err != nil {
 		var zero T
-		return zero, grove.BadRequest(
+		return zero, httperr.BadRequest(
 			fmt.Sprintf("invalid query parameter %q: want %s", name, typeName[T]()))
 	}
 	return v, nil

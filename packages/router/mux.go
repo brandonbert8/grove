@@ -74,6 +74,11 @@ func NewWithOptions(strict bool) *DefaultRouter {
 			fn(ctx, methodNotAllowedError{})
 			return
 		}
+		// RFC 9110 §15.5.6: a 405 response SHOULD include an Allow
+		// header listing the valid methods for the requested resource.
+		if allow := r.allowedMethodsFor(req.URL.Path); allow != nil {
+			w.Header().Set("Allow", strings.Join(allow, ", "))
+		}
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}))
 	return r
@@ -91,6 +96,66 @@ type methodNotAllowedError struct{}
 
 func (methodNotAllowedError) Error() string   { return "method not allowed" }
 func (methodNotAllowedError) StatusCode() int { return http.StatusMethodNotAllowed }
+
+// allowedMethodsFor returns the HTTP methods registered for path, so a
+// 405 response can advertise them in an Allow header (RFC 9110 §15.5.6).
+// GET implies HEAD (auto-mirrored). Nil when nothing matches (a true 404
+// path).
+func (r *DefaultRouter) allowedMethodsFor(path string) []string {
+	root := r.rootRouter()
+	root.mu.RLock()
+	defer root.mu.RUnlock()
+	seen := map[string]bool{}
+	var methods []string
+	add := func(m string) {
+		if m == "" || m == "*" || seen[m] {
+			return
+		}
+		seen[m] = true
+		methods = append(methods, m)
+	}
+	for _, rt := range root.routes {
+		if !matchPattern(rt.Path, path) {
+			continue
+		}
+		add(rt.Method)
+		if rt.Method == http.MethodGet && !seen[http.MethodHead] {
+			add(http.MethodHead)
+		}
+	}
+	if len(methods) == 0 {
+		return nil
+	}
+	sort.Strings(methods)
+	return methods
+}
+
+// matchPattern reports whether a Chi-style pattern matches path,
+// segment by segment. A {param} or {param:regex} segment matches any
+// single segment; * matches the rest.
+func matchPattern(pattern, path string) bool {
+	pSeg := strings.Split(pattern, "/")
+	qSeg := strings.Split(path, "/")
+	if len(pSeg) != len(qSeg) {
+		if len(pSeg) > 0 && pSeg[len(pSeg)-1] == "*" {
+			return true
+		}
+		return false
+	}
+	for i := range pSeg {
+		if pSeg[i] == qSeg[i] {
+			continue
+		}
+		if strings.HasPrefix(pSeg[i], "{") && strings.HasSuffix(pSeg[i], "}") {
+			continue
+		}
+		if pSeg[i] == "*" {
+			continue
+		}
+		return false
+	}
+	return true
+}
 
 // SetErrorHandler overrides how handler errors render (used by
 // grove.App.UseFilters for @Catch-style filters). Nil restores default.

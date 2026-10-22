@@ -3,15 +3,17 @@ package pipes
 import (
 	"fmt"
 	"math"
+	"net/http"
 	"reflect"
 	"strconv"
+	"strings"
 
-	grove "github.com/brandonbert8/grove/packages/core"
+	httperr "github.com/brandonbert8/grove/packages/httperr"
 	"github.com/brandonbert8/grove/packages/router"
 )
 
 // ValidateBody decodes the JSON body into v and validates it, returning
-// *grove.HttpError failures the router maps automatically:
+// *httperr.HttpError failures the router maps automatically:
 //
 //	400 when the JSON is malformed or missing,
 //	422 with field details when validation fails.
@@ -19,13 +21,16 @@ import (
 // It is the Go equivalent of NestJS's ValidationPipe for @Body() DTOs.
 func ValidateBody[T any](c router.Context, v *T, opts ...bodyOption) error {
 	if v == nil {
-		return grove.Internal("pipes: ValidateBody target must not be nil")
+		return httperr.Internal("pipes: ValidateBody target must not be nil")
 	}
 	if err := bodyInto(c, v, bodyOpts(opts)); err != nil {
-		return grove.BadRequest("invalid request body: " + err.Error())
+		if router.IsBodyTooLarge(err) {
+			return httperr.New(http.StatusRequestEntityTooLarge, err.Error())
+		}
+		return httperr.BadRequest("invalid request body: " + err.Error())
 	}
 	if ferrs := Validate(v); len(ferrs) > 0 {
-		return grove.Unprocessable("", ferrs)
+		return httperr.Unprocessable("", ferrs)
 	}
 	return nil
 }
@@ -103,13 +108,16 @@ func bodyOpts(opts []bodyOption) bodyOptions {
 // Use it when DTO tags are contracts; default to ValidateBody otherwise.
 func ValidateBodyStrict[T any](c router.Context, v *T, opts ...bodyOption) error {
 	if v == nil {
-		return grove.Internal("pipes: ValidateBodyStrict target must not be nil")
+		return httperr.Internal("pipes: ValidateBodyStrict target must not be nil")
 	}
 	if err := bodyInto(c, v, bodyOpts(opts)); err != nil {
-		return grove.BadRequest("invalid request body: " + err.Error())
+		if router.IsBodyTooLarge(err) {
+			return httperr.New(http.StatusRequestEntityTooLarge, err.Error())
+		}
+		return httperr.BadRequest("invalid request body: " + err.Error())
 	}
 	if ferrs := ValidateStrict(v); len(ferrs) > 0 {
-		return grove.Unprocessable("", ferrs)
+		return httperr.Unprocessable("", ferrs)
 	}
 	return nil
 }
@@ -144,14 +152,17 @@ func bodyInto(c router.Context, v any, o bodyOptions) error {
 // the per-handler boilerplate.
 func BindQuery[T any](c router.Context, v *T) error {
 	if v == nil {
-		return grove.Internal("pipes: BindQuery target must not be nil")
+		return httperr.Internal("pipes: BindQuery target must not be nil")
 	}
 	rv := reflect.ValueOf(v).Elem()
 	if rv.Kind() != reflect.Struct {
-		return grove.Internal("pipes: BindQuery target must be a struct pointer")
+		return httperr.Internal("pipes: BindQuery target must be a struct pointer")
 	}
 	values := c.Request().URL.Query()
 	rt := rv.Type()
+	// Only fields actually bound from the query string are validated: a
+	// query DTO must not be penalized for body-only required fields.
+	var bound []string
 	for i := 0; i < rt.NumField(); i++ {
 		f := rt.Field(i)
 		key := f.Tag.Get("query")
@@ -159,8 +170,19 @@ func BindQuery[T any](c router.Context, v *T) error {
 			continue
 		}
 		if !f.IsExported() {
-			return grove.Internal(fmt.Sprintf("pipes: BindQuery field %q has a query tag but is unexported", f.Name))
+			return httperr.Internal(fmt.Sprintf("pipes: BindQuery field %q has a query tag but is unexported", f.Name))
 		}
+		// El campo está bound (tiene query tag): se valida aunque el
+		// parámetro falte, así validate:"required" sigue exigiendo
+		// presencia. Campos sin query tag se salpan (evita el V10).
+		jsonName := f.Name
+		if tag, ok := f.Tag.Lookup("json"); ok {
+			if parts := strings.Split(tag, ","); parts[0] != "" && parts[0] != "-" {
+				jsonName = parts[0]
+			}
+		}
+		bound = append(bound, jsonName)
+
 		raw, ok := values[key]
 		if !ok || len(raw) == 0 {
 			continue
@@ -175,7 +197,7 @@ func BindQuery[T any](c router.Context, v *T) error {
 			for _, r := range raw {
 				ev := reflect.New(elem).Elem()
 				if !setScalar(ev, r) {
-					return grove.BadRequest(fmt.Sprintf(
+					return httperr.BadRequest(fmt.Sprintf(
 						"value for query parameter %q is not a valid %s", key, elem.Kind()))
 				}
 				s = reflect.Append(s, ev)
@@ -184,12 +206,12 @@ func BindQuery[T any](c router.Context, v *T) error {
 			continue
 		}
 		if !setScalar(fv, raw[0]) {
-			return grove.BadRequest(fmt.Sprintf(
+			return httperr.BadRequest(fmt.Sprintf(
 				"value for query parameter %q is not a valid %s", key, fv.Kind()))
 		}
 	}
-	if ferrs := ValidateStrict(v); len(ferrs) > 0 {
-		return grove.Unprocessable("", ferrs)
+	if ferrs := ValidateStrictFields(v, bound...); len(ferrs) > 0 {
+		return httperr.Unprocessable("", ferrs)
 	}
 	return nil
 }
@@ -206,14 +228,15 @@ func BindQuery[T any](c router.Context, v *T) error {
 // headers leave the zero value, and malformed values are 400.
 func BindHeader[T any](c router.Context, v *T) error {
 	if v == nil {
-		return grove.Internal("pipes: BindHeader target must not be nil")
+		return httperr.Internal("pipes: BindHeader target must not be nil")
 	}
 	rv := reflect.ValueOf(v).Elem()
 	if rv.Kind() != reflect.Struct {
-		return grove.Internal("pipes: BindHeader target must be a struct pointer")
+		return httperr.Internal("pipes: BindHeader target must be a struct pointer")
 	}
 	h := c.Request().Header
 	rt := rv.Type()
+	var bound []string
 	for i := 0; i < rt.NumField(); i++ {
 		f := rt.Field(i)
 		key := f.Tag.Get("header")
@@ -221,8 +244,19 @@ func BindHeader[T any](c router.Context, v *T) error {
 			continue
 		}
 		if !f.IsExported() {
-			return grove.Internal(fmt.Sprintf("pipes: BindHeader field %q has a header tag but is unexported", f.Name))
+			return httperr.Internal(fmt.Sprintf("pipes: BindHeader field %q has a header tag but is unexported", f.Name))
 		}
+		// El campo está bound (tiene header tag): se valida aunque el
+		// encabezado falte, así validate:"required" sigue exigiendo
+		// presencia. Campos sin header tag se salpan (evita el V10).
+		jsonName := f.Name
+		if tag, ok := f.Tag.Lookup("json"); ok {
+			if parts := strings.Split(tag, ","); parts[0] != "" && parts[0] != "-" {
+				jsonName = parts[0]
+			}
+		}
+		bound = append(bound, jsonName)
+
 		raw := h.Get(key)
 		if raw == "" {
 			continue
@@ -232,12 +266,12 @@ func BindHeader[T any](c router.Context, v *T) error {
 			continue
 		}
 		if !setScalar(fv, raw) {
-			return grove.BadRequest(fmt.Sprintf(
+			return httperr.BadRequest(fmt.Sprintf(
 				"value for header %q is not a valid %s", key, fv.Kind()))
 		}
 	}
-	if ferrs := ValidateStrict(v); len(ferrs) > 0 {
-		return grove.Unprocessable("", ferrs)
+	if ferrs := ValidateStrictFields(v, bound...); len(ferrs) > 0 {
+		return httperr.Unprocessable("", ferrs)
 	}
 	return nil
 }

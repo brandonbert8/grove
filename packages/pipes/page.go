@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	grove "github.com/brandonbert8/grove/packages/core"
+	httperr "github.com/brandonbert8/grove/packages/httperr"
 	"github.com/brandonbert8/grove/packages/router"
 )
 
@@ -28,7 +28,7 @@ const (
 
 // ParsePage reads ?page (default 1) and ?limit (default DefaultPageLimit,
 // capped at max; max <= 0 means DefaultPageMax). Malformed values are
-// 400 *grove.HttpError via Query, so handlers stay branch-free.
+// 400 *httperr.HttpError via Query, so handlers stay branch-free.
 // Out-of-range values clamp (documented): page<1→1, limit<1→1,
 // limit>max→max. Offsets beyond maxOffset fail with 400 to protect
 // the database from giant skips:
@@ -72,10 +72,10 @@ func ParsePageWithMaxOffset(c router.Context, max, maxOffset int) (Page, error) 
 	// Overflow-safe offset: (page-1)*limit in 64-bit, then bound.
 	offset64 := int64(page-1) * int64(limit)
 	if offset64 > int64(maxOffset) {
-		return Page{}, grove.BadRequest(fmt.Sprintf("page offset %d exceeds maximum %d", offset64, maxOffset))
+		return Page{}, httperr.BadRequest(fmt.Sprintf("page offset %d exceeds maximum %d", offset64, maxOffset))
 	}
 	if offset64 > int64(math.MaxInt) {
-		return Page{}, grove.BadRequest("page offset overflows")
+		return Page{}, httperr.BadRequest("page offset overflows")
 	}
 	return Page{Page: page, Limit: limit, Offset: int(offset64)}, nil
 }

@@ -59,12 +59,34 @@ func ValidateStrict(v any) []FieldError {
 	return validateValue(v, true)
 }
 
+// ValidateStrictFields validates only the top-level fields whose json name
+// (or Go field name when there's no json tag) appears in fieldNames.
+// When fieldNames is empty, all fields are validated (same as
+// ValidateStrict). HTTP binders use it so a DTO used for query binding is
+// not penalized for body-only required fields.
+func ValidateStrictFields(v any, fieldNames ...string) []FieldError {
+	var allow map[string]bool
+	if len(fieldNames) > 0 {
+		allow = make(map[string]bool, len(fieldNames))
+		for _, n := range fieldNames {
+			allow[n] = true
+		}
+	}
+	return validateValueFields(v, true, allow)
+}
+
 // maxValidateDepth caps recursive struct validation (DoS guard for
 // cyclic pointer graphs built programmatically).
 const maxValidateDepth = 32
 
-// validateValue dereferences v and validates structs.
+// validateValue dereferences v and validates all struct fields.
 func validateValue(v any, strict bool) []FieldError {
+	return validateValueFields(v, strict, nil)
+}
+
+// validateValueFields dereferences v and validates struct fields,
+// honoring allow (top-level field names to validate; nil = all).
+func validateValueFields(v any, strict bool, allow map[string]bool) []FieldError {
 	if v == nil {
 		return []FieldError{{Field: "", Tag: "required", Message: "value is required"}}
 	}
@@ -78,7 +100,7 @@ func validateValue(v any, strict bool) []FieldError {
 	if rv.Kind() != reflect.Struct {
 		return nil
 	}
-	return validateStruct(rv, "", strict, 0, map[[2]uintptr]bool{})
+	return validateStruct(rv, "", strict, 0, map[[2]uintptr]bool{}, allow)
 }
 
 // RuleFunc validates one field for a custom rule (see RegisterRule).
@@ -103,7 +125,7 @@ func RegisterRule(name string, fn RuleFunc) {
 	customRules.Store(name, fn)
 }
 
-func validateStruct(rv reflect.Value, prefix string, strict bool, depth int, seen map[[2]uintptr]bool) []FieldError {
+func validateStruct(rv reflect.Value, prefix string, strict bool, depth int, seen map[[2]uintptr]bool, allow map[string]bool) []FieldError {
 	var out []FieldError
 	if depth > maxValidateDepth {
 		return []FieldError{{Field: prefix, Tag: "depth", Message: "validation depth exceeded"}}
@@ -126,6 +148,12 @@ func validateStruct(rv reflect.Value, prefix string, strict bool, depth int, see
 				name = parts[0]
 			}
 		}
+		// At the top level only validate fields the caller bound. This
+		// keeps a query/header/path DTO from being penalized for
+		// body-only required fields it never binds.
+		if prefix == "" && allow != nil && !allow[name] {
+			continue
+		}
 		path := name
 		if prefix != "" {
 			path = prefix + "." + name
@@ -145,7 +173,7 @@ func validateStruct(rv reflect.Value, prefix string, strict bool, depth int, see
 			if tag == "" || !hasRule(tag, "required") || !isNilOrZeroPointer(fv) {
 				// Depth-capped: cyclic pointer graphs terminate with
 				// a depth error instead of overflowing the stack.
-				out = append(out, validateStruct(deref, path, strict, depth+1, seen)...)
+				out = append(out, validateStruct(deref, path, strict, depth+1, seen, nil)...)
 			}
 		}
 		// Recurse into slices of structs for element validation.
@@ -159,7 +187,7 @@ func validateStruct(rv reflect.Value, prefix string, strict bool, depth int, see
 					ev = ev.Elem()
 				}
 				if ev.IsValid() && ev.Kind() == reflect.Struct && !isTimeLike(ev) {
-					out = append(out, validateStruct(ev, fmt.Sprintf("%s[%d]", path, j), strict, depth+1, seen)...)
+					out = append(out, validateStruct(ev, fmt.Sprintf("%s[%d]", path, j), strict, depth+1, seen, nil)...)
 				}
 			}
 		}
@@ -173,6 +201,9 @@ func validateStruct(rv reflect.Value, prefix string, strict bool, depth int, see
 				continue
 			}
 			name, param, _ := strings.Cut(rule, "=")
+			if name == "-" {
+				continue // skip-validation marker: do not validate this field
+			}
 			if msg := checkRule(path, fv, name, param, strict); msg != "" {
 				out = append(out, FieldError{Field: path, Tag: name, Param: param, Message: msg})
 			}

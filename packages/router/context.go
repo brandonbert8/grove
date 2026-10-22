@@ -15,6 +15,44 @@ var (
 	errEmptyBody     = errors.New("router: request body is empty")
 )
 
+// bodyTooLargeError is returned by BodyWithLimit when the request body
+// exceeds the configured limit, so callers can map it to a 413 Payload
+// Too Large instead of a generic 400 Bad Request.
+type bodyTooLargeError struct{}
+
+func (bodyTooLargeError) Error() string { return "request body too large" }
+func (bodyTooLargeError) StatusCode() int { return http.StatusRequestEntityTooLarge }
+
+// limitedReader wraps a request body and fails with bodyTooLargeError
+// once more than limit bytes have been read, so chunked bodies are also
+// capped at the configured limit.
+type limitedReader struct {
+	r     io.ReadCloser
+	n     int64
+	limit int64
+}
+
+func (lr *limitedReader) Read(p []byte) (int, error) {
+	if lr.n >= lr.limit {
+		return 0, bodyTooLargeError{}
+	}
+	n, err := lr.r.Read(p)
+	lr.n += int64(n)
+	if lr.n > lr.limit {
+		return n, bodyTooLargeError{}
+	}
+	return n, err
+}
+
+func (lr *limitedReader) Close() error { return lr.r.Close() }
+
+// IsBodyTooLarge reports whether err is a request-body-too-large error
+// from BodyWithLimit (maps to 413 Payload Too Large).
+func IsBodyTooLarge(err error) bool {
+	var b bodyTooLargeError
+	return errors.As(err, &b)
+}
+
 // Context is the per-request abstraction passed to handlers.
 //
 // It exposes the underlying net/http primitives for escape hatches
@@ -150,7 +188,18 @@ func (c *httpContext) BodyWithLimit(v any, limit int64) error {
 	if limit <= 0 {
 		limit = maxBodyBytes
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(c.w, c.r.Body, limit))
+	// Content-Length (when present) is a reliable pre-check: refuse
+	// oversized bodies with 413 before touching the decoder.
+	if cl := c.r.ContentLength; cl > 0 && cl > limit {
+		return bodyTooLargeError{}
+	}
+	body := c.r.Body
+	// Chunked / unknown-length bodies: enforce the limit while reading so
+	// they also surface as 413 instead of a generic decode error.
+	if c.r.ContentLength <= 0 {
+		body = &limitedReader{r: body, limit: limit}
+	}
+	dec := json.NewDecoder(body)
 	if err := dec.Decode(v); err != nil {
 		return err
 	}

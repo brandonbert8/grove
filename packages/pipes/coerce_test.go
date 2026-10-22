@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	grove "github.com/brandonbert8/grove/packages/core"
+	httperr "github.com/brandonbert8/grove/packages/httperr"
 	"github.com/brandonbert8/grove/packages/router"
 )
 
@@ -91,7 +91,7 @@ func TestBindQueryStrictMalformed(t *testing.T) {
 	bad := testCtx(t, "GET", "/x?limit=abc")
 	var q listQuery
 	err := BindQuery(bad, &q)
-	he, ok := grove.AsHttpError(err)
+	he, ok := httperr.As(err)
 	if !ok || he.StatusCode() != 400 {
 		t.Fatalf("malformed limit must be 400 HttpError, got %v", err)
 	}
@@ -117,7 +117,7 @@ func TestPathAndQueryHelpers(t *testing.T) {
 	}
 	if _, err := Path[int](c, "missing"); err == nil {
 		t.Fatal("missing path param must 400")
-	} else if he, ok := grove.AsHttpError(err); !ok || he.StatusCode() != 400 {
+	} else if he, ok := httperr.As(err); !ok || he.StatusCode() != 400 {
 		t.Fatalf("missing path param must be 400 HttpError, got %v", err)
 	}
 	limit, err := Query(c, "limit", 20)
@@ -140,7 +140,7 @@ func TestPathAndQueryHelpers(t *testing.T) {
 	bad := testCtx(t, "GET", "/x?limit=abc")
 	if _, err := Query(bad, "limit", 20); err == nil {
 		t.Fatal("malformed query must 400")
-	} else if he, ok := grove.AsHttpError(err); !ok || he.StatusCode() != 400 {
+	} else if he, ok := httperr.As(err); !ok || he.StatusCode() != 400 {
 		t.Fatalf("malformed query must be 400 HttpError, got %v", err)
 	}
 }
