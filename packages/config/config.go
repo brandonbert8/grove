@@ -260,8 +260,10 @@ func Merged(opts ...Option) (map[string]string, error) {
 	}
 	return mergedEnv(o)
 }
+
 // lookup returns the first non-empty value for any of the names.
-func lookup(vars map[string]string, names ...string) (string, bool) {	for _, n := range names {
+func lookup(vars map[string]string, names ...string) (string, bool) {
+	for _, n := range names {
 		if v, ok := vars[n]; ok && strings.TrimSpace(v) != "" {
 			return strings.TrimSpace(v), true
 		}
