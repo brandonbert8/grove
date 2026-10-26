@@ -132,7 +132,7 @@ func writeFilesCollect(dir string, files map[string]string) ([]ui.FileChange, er
 func scaffoldGoMod(module, groveVersion string) string {
 	return fmt.Sprintf(`module %s
 
-go 1.25
+go 1.26.0
 
 require github.com/brandonbert8/grove %s
 `, module, groveVersion)

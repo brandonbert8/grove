@@ -4,8 +4,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	grove "github.com/brandonbert8/grove/packages/core"
 	"github.com/brandonbert8/grove/packages/config"
+	grove "github.com/brandonbert8/grove/packages/core"
 	"github.com/brandonbert8/grove/packages/di"
 	"github.com/brandonbert8/grove/packages/router"
 )
@@ -47,11 +47,25 @@ func WithMiddleware(mw ...router.Middleware) TestOption {
 //
 //	app := grovtest.TestingModule(t, users.UsersModule,
 //	    grovtest.Override[*users.Service](mockSvc))
-func TestingModule(t testing.TB, mod *grove.ModuleDef, opts ...TestOption) *grove.App {
+//
+// mod accepts *grove.ModuleDef (the common case) or any grove.Module
+// (grove.NewModule funcs, ModuleFunc, ...).
+func TestingModule(t testing.TB, mod any, opts ...TestOption) *grove.App {
 	t.Helper()
+	var m grove.Module
+	switch v := mod.(type) {
+	case nil:
+		// nothing
+	case grove.Module:
+		m = v
+	case *grove.ModuleDef:
+		m = v.AsModule()
+	default:
+		t.Fatalf("grovtest: TestingModule module must be grove.Module or *grove.ModuleDef, got %T", mod)
+	}
 	var mods []grove.Module
-	if mod != nil {
-		mods = append(mods, mod.AsModule())
+	if m != nil {
+		mods = append(mods, m)
 	}
 	o := collectOptions(opts...)
 	return testingModules(t, mods, o)

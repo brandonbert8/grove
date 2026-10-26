@@ -110,7 +110,6 @@ func %[2]sInterceptor() router.Middleware {
 `, pkg, typ)
 }
 
-
 // serviceFile renders an in-memory CRUD service with a ServiceName marker
 // so it satisfies grove.Service for future tooling. typ is the capitalized
 // base name ("Billing"); the "Service" suffix is added by the template.
