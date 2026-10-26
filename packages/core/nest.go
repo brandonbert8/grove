@@ -44,6 +44,24 @@ func Provide[T any](lifetime di.Lifetime, build func(c *di.Container) (T, error)
 	}
 }
 
+// ProvideNamed builds a Provider under an explicit name instead of the
+// default di.KeyFor[T] key. Use it when a module exposes the same type
+// under multiple keys or when callers resolve by string name:
+//
+//	grove.ProvideNamed("readDB", di.Singleton, func(c *di.Container) (any, error) {
+//	    return sql.Open("postgres", c.MustResolve("readDSN").(string)), nil
+//	})
+func ProvideNamed(name string, lifetime di.Lifetime, build func(c *di.Container) (any, error)) Provider {
+	if name == "" {
+		panic("grove: ProvideNamed requires a non-empty name")
+	}
+	return Provider{
+		Name:     name,
+		Lifetime: lifetime,
+		Build:    build,
+	}
+}
+
 // ProvideValue builds a singleton Provider for an existing value.
 func ProvideValue[T any](value T) Provider {
 	return Provider{
@@ -59,6 +77,14 @@ func ProvideValue[T any](value T) Provider {
 //	grove.Provide0(di.Singleton, NewUsersService)
 func Provide0[T any](lifetime di.Lifetime, build func() T) Provider {
 	return Provide(lifetime, func(*di.Container) (T, error) {
+		return build(), nil
+	})
+}
+
+// Provide0Named builds a Provider from a zero-argument constructor under
+// an explicit name (see ProvideNamed).
+func Provide0Named(name string, lifetime di.Lifetime, build func() any) Provider {
+	return ProvideNamed(name, lifetime, func(*di.Container) (any, error) {
 		return build(), nil
 	})
 }
@@ -84,6 +110,19 @@ func ProvideRequest[T any](build func(c *di.Container, ctx context.Context) (T, 
 			}
 			return v, nil
 		},
+	}
+}
+
+// ProvideRequestNamed builds a request-scoped Provider under an explicit
+// name (see ProvideNamed).
+func ProvideRequestNamed(name string, build func(c *di.Container, ctx context.Context) (any, error)) Provider {
+	if name == "" {
+		panic("grove: ProvideRequestNamed requires a non-empty name")
+	}
+	return Provider{
+		Name:        name,
+		Lifetime:    di.RequestScoped,
+		BuildScoped: build,
 	}
 }
 
@@ -311,9 +350,9 @@ func (m *ModuleDef) Register(app *App) error {
 	if app.builtModules[m] {
 		return nil
 	}
-	// Marcar temprano evita reingreso por imports cíclicos, pero si el
-	// registro falla (proveedor/controlador mal formado) se deshace la
-	// marca para que un reintento pueda registrar el módulo.
+	// Mark early to prevent re-entry on cyclic imports, but if
+	// registration fails (malformed provider/controller) the mark is
+	// undone so a retry can register the module.
 	moduleRegistered := false
 	defer func() {
 		if !moduleRegistered {

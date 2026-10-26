@@ -99,20 +99,21 @@ func HealthModuleWithChecks(path string, timeout time.Duration, checks map[strin
 				}
 			case <-ctx.Done():
 				// Probe budget exhausted: mark the rest unknown.
+				// Do not drain ch in a background goroutine: that can
+				// block forever if a check ignores its context and never
+				// writes. ch is buffered (len(checks)) so in-flight
+				// checks can write without blocking; their results are
+				// simply dropped once we return 503.
 				for name := range checks {
 					if _, ok := status[name]; !ok {
 						status[name] = "unknown"
 					}
 				}
 				failed = true
-				i = n // drain remaining in background; don't hang k8s
-				go func() {
-					for j := 0; j < n; j++ {
-						<-ch
-					}
-				}()
+				goto done
 			}
 		}
+	done:
 		if failed {
 			return c.JSON(503, map[string]any{"status": "degraded", "checks": status})
 		}

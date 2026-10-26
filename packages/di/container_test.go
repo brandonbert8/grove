@@ -1,6 +1,7 @@
 package di
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -177,5 +178,44 @@ func TestPanicInFactoryDoesNotWedge(t *testing.T) {
 	// singleflight channel).
 	if _, err := c.Resolve("boom"); err == nil {
 		t.Fatal("expected panic propagated as error on retry")
+	}
+}
+
+// TestScopeSingleflightScopedFactory guards the P0 fix: concurrent
+// first-resolves of the same request-scoped key within one Scope must
+// coalesce so the factory runs exactly once (not once per goroutine).
+func TestScopeSingleflightScopedFactory(t *testing.T) {
+	c := New()
+	type svc struct{}
+	var calls int32
+	c.MustRegisterScoped("svc", func(c *Container, ctx context.Context) (any, error) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			time.Sleep(5 * time.Millisecond) // widen the race window
+		}
+		return &svc{}, nil
+	})
+	s := c.Scope(context.Background())
+	const n = 20
+	results := make([]error, n)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := s.Resolve("svc")
+			mu.Lock()
+			results[i] = err
+			mu.Unlock()
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range results {
+		if err != nil {
+			t.Errorf("resolve %d failed: %v", i, err)
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("scoped factory should run exactly once per Scope, got %d", got)
 	}
 }

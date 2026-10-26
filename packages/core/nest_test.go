@@ -152,3 +152,81 @@ func TestChainOrder(t *testing.T) {
 		t.Fatalf("chain order = %v, want [a b]", order)
 	}
 }
+
+type namedRepo struct{ dsn string }
+
+func TestProvideNamed(t *testing.T) {
+	app := New()
+	app.MustRegister((&ModuleDef{
+		Name: "db",
+		Providers: []Provider{
+			ProvideNamed("readDB", di.Singleton, func(c *di.Container) (any, error) {
+				return &namedRepo{dsn: "read://db"}, nil
+			}),
+			Provide0Named("writeDB", di.Singleton, func() any {
+				return &namedRepo{dsn: "write://db"}
+			}),
+		},
+	}).AsModule())
+
+	read, err := app.Container.Resolve("readDB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.(*namedRepo).dsn != "read://db" {
+		t.Fatalf("named resolve = %+v", read)
+	}
+
+	write, err := app.Container.Resolve("writeDB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if write.(*namedRepo).dsn != "write://db" {
+		t.Fatalf("named0 resolve = %+v", write)
+	}
+
+	// Missing named key must fail.
+	if _, err := app.Container.Resolve("nope"); err == nil {
+		t.Fatal("expected missing named provider error")
+	}
+}
+
+func TestInjectNamedAndResolveNamed(t *testing.T) {
+	app := New()
+	app.MustRegister((&ModuleDef{
+		Name: "db",
+		Providers: []Provider{
+			ProvideNamed("readDB", di.Singleton, func(c *di.Container) (any, error) {
+				return &namedRepo{dsn: "read://db"}, nil
+			}),
+		},
+	}).AsModule())
+
+	// InjectNamed resolves by explicit key.
+	svc, err := InjectNamed[*namedRepo](app, "readDB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.dsn != "read://db" {
+		t.Fatalf("InjectNamed = %+v", svc)
+	}
+
+	// ResolveNamed resolves by explicit key from the container.
+	svc2, err := ResolveNamed[*namedRepo](app.Container, "readDB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc2.dsn != "read://db" {
+		t.Fatalf("ResolveNamed = %+v", svc2)
+	}
+
+	// Wrong type assertion fails.
+	if _, err := InjectNamed[*svcB](app, "readDB"); err == nil {
+		t.Fatal("expected type mismatch error")
+	}
+
+	// Missing key fails.
+	if _, err := InjectNamed[*namedRepo](app, "nope"); err == nil {
+		t.Fatal("expected missing named provider error")
+	}
+}

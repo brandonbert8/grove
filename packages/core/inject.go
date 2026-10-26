@@ -1,6 +1,8 @@
 package grove
 
 import (
+	"fmt"
+
 	"github.com/brandonbert8/grove/packages/di"
 )
 
@@ -198,4 +200,56 @@ func MustControllers[T any, C any](app *App, ctor func(T) C, define func(C) Cont
 		panic(err)
 	}
 	return defs
+}
+
+// InjectNamed resolves the explicit container key for T, the escape
+// hatch when the default di.KeyFor[T] key is not the registration key:
+//
+//	svc, err := grove.InjectNamed[*UsersService](app, "readDB")
+func InjectNamed[T any](app *App, name string) (T, error) {
+	var zero T
+	v, err := app.Container.Resolve(name)
+	if err != nil {
+		return zero, err
+	}
+	typed, ok := v.(T)
+	if !ok {
+		return zero, fmt.Errorf("grove: registration for %q is %T, not %s", name, v, di.KeyFor[T]())
+	}
+	return typed, nil
+}
+
+// MustInjectNamed is like InjectNamed but panics on error.
+func MustInjectNamed[T any](app *App, name string) T {
+	v, err := InjectNamed[T](app, name)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// ResolveNamed resolves the explicit container key name and type-asserts
+// to T:
+//
+//	svc, err := grove.ResolveNamed[*UsersService](app.Container, "readDB")
+func ResolveNamed[T any](c *di.Container, name string) (T, error) {
+	var zero T
+	v, err := c.Resolve(name)
+	if err != nil {
+		return zero, err
+	}
+	typed, ok := v.(T)
+	if !ok {
+		return zero, fmt.Errorf("grove: registration for %q is %T, not %s", name, v, di.KeyFor[T]())
+	}
+	return typed, nil
+}
+
+// MustResolveNamed is like ResolveNamed but panics on error.
+func MustResolveNamed[T any](c *di.Container, name string) T {
+	v, err := ResolveNamed[T](c, name)
+	if err != nil {
+		panic(err)
+	}
+	return v
 }

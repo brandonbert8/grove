@@ -332,12 +332,15 @@ type scopeKey struct{}
 // Cycle detection is delegated to the per-call resolution chain carried
 // by Container child copies, so Scope does not keep its own resolving
 // map (that previously produced false cycle errors under concurrency).
+// inflight coalesces concurrent first-resolves of one scoped factory so
+// the constructor runs at most once per Scope even under concurrency.
 type Scope struct {
-	parent  *Container
-	ctx     context.Context
-	mu      sync.Mutex
-	cache   map[string]any
-	closers []io.Closer
+	parent   *Container
+	ctx      context.Context
+	mu       sync.Mutex
+	cache    map[string]any
+	inflight map[string]*buildCall
+	closers  []io.Closer
 }
 
 // ScopeOf derives a per-request Scope bound to ctx.
@@ -345,7 +348,7 @@ func (c *Container) Scope(ctx context.Context) *Scope {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return &Scope{parent: c, ctx: ctx, cache: make(map[string]any)}
+	return &Scope{parent: c, ctx: ctx, cache: make(map[string]any), inflight: make(map[string]*buildCall)}
 }
 
 // Context returns the request context the Scope was created with.
@@ -398,6 +401,21 @@ func (s *Scope) Resolve(name string) (any, error) {
 		if e.scoped == nil {
 			return nil, fmt.Errorf("di: scoped registration %q has no factory", name)
 		}
+		// Singleflight: coalesce concurrent first-resolves of the same
+		// scoped key so the factory runs at most once per Scope.
+		s.mu.Lock()
+		if call, building := s.inflight[name]; building {
+			s.mu.Unlock()
+			<-call.done
+			if call.err != nil {
+				return nil, call.err
+			}
+			return call.val, nil
+		}
+		call := &buildCall{done: make(chan struct{})}
+		s.inflight[name] = call
+		s.mu.Unlock()
+
 		// Child of the parent carries the chain so a scoped factory that
 		// re-resolves itself (directly or through the parent) is detected
 		// as a cycle instead of recursing forever.
@@ -405,16 +423,28 @@ func (s *Scope) Resolve(name string) (any, error) {
 		child.chain = append(s.parent.chain, name)
 		v, err := e.scoped(&child, s.Context())
 		if err != nil {
+			s.mu.Lock()
+			delete(s.inflight, name)
+			close(call.done)
+			s.mu.Unlock()
 			return nil, fmt.Errorf("di: scoped factory for %q failed: %w", name, err)
 		}
 		if v == nil {
+			s.mu.Lock()
+			delete(s.inflight, name)
+			close(call.done)
+			s.mu.Unlock()
 			return nil, fmt.Errorf("di: scoped factory for %q returned nil", name)
 		}
+
 		s.mu.Lock()
+		delete(s.inflight, name)
 		s.cache[name] = v
 		if cl, ok := v.(io.Closer); ok {
 			s.closers = append(s.closers, cl)
 		}
+		call.val = v
+		close(call.done)
 		s.mu.Unlock()
 		return v, nil
 	default:
