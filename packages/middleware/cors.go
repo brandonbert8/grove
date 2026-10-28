@@ -42,6 +42,7 @@ func DefaultCORSConfig() CORSConfig {
 // pass, others get no CORS headers; OPTIONS preflights short-circuit
 // with 204 on match.
 func CORS(cfg CORSConfig) router.Middleware {
+
 	if len(cfg.AllowOrigins) == 0 {
 		cfg.AllowOrigins = []string{"*"}
 	}

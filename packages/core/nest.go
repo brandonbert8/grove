@@ -289,11 +289,17 @@ type ModuleDef struct {
 	Exports []string
 	// Global makes providers visible without importing (@Global).
 	Global bool
-	// Controllers mounts route tables.
+	// Controllers mounts static route tables.
+	//
+	// Deprecated: use BuildControllers instead. It is the single, idiomatic
+	// path for registering routes: the controller is resolved from the
+	// container with constructor injection and returns its route table.
+	// Keeping both fields invites mixing styles; BuildControllers is the
+	// only supported form going forward.
 	Controllers []ControllerDef
-	// BuildControllers optionally builds controllers after providers are
-	// registered, so handlers resolve services from the container with
-	// constructor injection. It runs after Controllers are mounted.
+	// BuildControllers builds controllers after providers are registered,
+	// so handlers resolve services from the container with constructor
+	// injection. It is the single way to mount routes in a ModuleDef.
 	BuildControllers func(app *App) ([]ControllerDef, error)
 }
 

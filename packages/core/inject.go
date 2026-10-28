@@ -72,9 +72,14 @@ func Wire[T any, C any](app *App, ctor func(T) C) (C, error) {
 	return ctor(dep), nil
 }
 
-// Wire2 resolves two dependencies and applies ctor:
+// Wire2 resolves two dependencies and applies ctor.
 //
 //	h, err := grove.Wire2(app, NewAuthController) // func(svc *Service, store *Store) *Controller
+//
+// For three or more dependencies prefer grove.Wire3 / grove.Wire4; beyond
+// that, resolve explicitly with grove.Inject / di.ResolveAs and call the
+// constructor yourself. There is no variadic Wire by design: explicit
+// type parameters keep constructor wiring compile-time checked.
 func Wire2[T1 any, T2 any, C any](app *App, ctor func(T1, T2) C) (C, error) {
 	var zero C
 	d1, err := di.ResolveAs[T1](app.Container)
@@ -89,7 +94,11 @@ func Wire2[T1 any, T2 any, C any](app *App, ctor func(T1, T2) C) (C, error) {
 }
 
 // Wire3 resolves three dependencies and applies ctor.
-// For 6+ dependencies prefer the `grove wire` codegen (zero ResolveAs).
+//
+// For more than four dependencies resolve explicitly with grove.Inject /
+// di.ResolveAs and call the constructor yourself, or use the `grove wire`
+// codegen (zero ResolveAs). There is no variadic Wire by design: explicit
+// type parameters keep constructor wiring compile-time checked.
 func Wire3[T1 any, T2 any, T3 any, C any](app *App, ctor func(T1, T2, T3) C) (C, error) {
 	var zero C
 	d1, err := di.ResolveAs[T1](app.Container)
@@ -108,6 +117,10 @@ func Wire3[T1 any, T2 any, T3 any, C any](app *App, ctor func(T1, T2, T3) C) (C,
 }
 
 // Wire4 resolves four dependencies and applies ctor.
+//
+// This is the last arity-specific helper. For five or more dependencies
+// resolve explicitly with grove.Inject / di.ResolveAs and call the
+// constructor yourself, or use the `grove wire` codegen.
 func Wire4[T1 any, T2 any, T3 any, T4 any, C any](app *App, ctor func(T1, T2, T3, T4) C) (C, error) {
 	var zero C
 	d1, err := di.ResolveAs[T1](app.Container)
@@ -162,6 +175,10 @@ func Controllers[T any, C any](app *App, ctor func(T) C, define func(C) Controll
 
 // Controllers2 is Controllers for two-dependency constructors
 // (see Wire2).
+//
+// Controllers3 / Controllers4 cover three and four dependencies. Beyond
+// that, resolve explicitly with grove.Inject / di.ResolveAs and build the
+// ControllerDef yourself.
 func Controllers2[T1 any, T2 any, C any](app *App, ctor func(T1, T2) C, define func(C) ControllerDef) ([]ControllerDef, error) {
 	ctrl, err := Wire2(app, ctor)
 	if err != nil {
@@ -173,6 +190,9 @@ func Controllers2[T1 any, T2 any, C any](app *App, ctor func(T1, T2) C, define f
 // Controllers3 is Controllers for three-dependency constructors
 // (see Wire3). It removes the Wire2→Wire3 rewrite cliff: adding a
 // dependency only changes the constructor, not the helper family.
+//
+// Controllers4 covers four dependencies. Beyond that, resolve explicitly
+// with grove.Inject / di.ResolveAs and build the ControllerDef yourself.
 func Controllers3[T1 any, T2 any, T3 any, C any](app *App, ctor func(T1, T2, T3) C, define func(C) ControllerDef) ([]ControllerDef, error) {
 	ctrl, err := Wire3(app, ctor)
 	if err != nil {
@@ -182,7 +202,11 @@ func Controllers3[T1 any, T2 any, T3 any, C any](app *App, ctor func(T1, T2, T3)
 }
 
 // Controllers4 is Controllers for four-dependency constructors
-// (see Wire4).
+// (see Wire4). This is the last arity-specific helper.
+//
+// For five or more dependencies resolve explicitly with grove.Inject /
+// di.ResolveAs and build the ControllerDef yourself, or use the `grove
+// wire` codegen.
 func Controllers4[T1 any, T2 any, T3 any, T4 any, C any](app *App, ctor func(T1, T2, T3, T4) C, define func(C) ControllerDef) ([]ControllerDef, error) {
 	ctrl, err := Wire4(app, ctor)
 	if err != nil {
