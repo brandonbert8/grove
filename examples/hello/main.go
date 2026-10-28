@@ -38,19 +38,28 @@ func (c *GreetingController) Greet(ctx router.Context) error {
 	return ctx.JSON(200, map[string]string{"message": c.svc.Message()})
 }
 
-// HelloModule wires the service and route into the app.
-var HelloModule = grove.NewModule("hello", func(app *grove.App) error {
-	if err := di.RegisterSingletonAs(app.Container, NewGreetingService()); err != nil {
-		return err
-	}
-	ctrl, err := grove.Wire(app, NewGreetingController)
-	if err != nil {
-		return err
-	}
-	// App.Route (not raw Router) keeps the route visible to App.Docs.
-	app.Route("GET", "/hello", ctrl.Greet)
-	return nil
-})
+// HelloModule wires the service and route into the app using the
+// idiomatic Grove pattern: Providers for DI, BuildControllers for
+// constructor-injected route tables. No inline RegisterSingletonAs and no
+// ad-hoc app.Route — everything goes through ModuleDef.
+var HelloModule = &grove.ModuleDef{
+	Name: "hello",
+	Providers: []grove.Provider{
+		grove.Provide0(di.Singleton, NewGreetingService),
+	},
+	BuildControllers: func(app *grove.App) ([]grove.ControllerDef, error) {
+		ctrl, err := grove.Wire(app, NewGreetingController)
+		if err != nil {
+			return nil, err
+		}
+		return []grove.ControllerDef{{
+			Prefix: "/hello",
+			Endpoints: []grove.Endpoint{
+				grove.GET("", ctrl.Greet),
+			},
+		}}, nil
+	},
+}
 
 func main() {
 	app := grove.New()
@@ -58,7 +67,7 @@ func main() {
 	app.Router.Use(grove.RequestScope(app))
 	app.EnableStrictProviders()
 	app.MustRegister(
-		HelloModule,
+		HelloModule.AsModule(),
 		grove.HealthModule("").AsModule(),
 	)
 	if err := app.VerifyExports(); err != nil {
