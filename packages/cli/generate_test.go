@@ -46,7 +46,7 @@ func TestGenerateModule(t *testing.T) {
 		}
 	}
 	mod, _ := os.ReadFile(filepath.Join(base, "module.go"))
-	if !strings.Contains(string(mod), "ModuleDef") || !strings.Contains(string(mod), "BuildControllers") {
+	if !strings.Contains(string(mod), "ModuleDef") || !strings.Contains(string(mod), "Build:") {
 		t.Fatal("module.go should use the NestJS-style ModuleDef")
 	}
 	// Type and constructor names must agree across generated files.

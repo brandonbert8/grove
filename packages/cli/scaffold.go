@@ -165,6 +165,8 @@ func main() {
 	// v1 defaults: fail fast on duplicate providers, version APIs under
 	// /v1 while keeping probes unprefixed (NestJS setGlobalPrefix).
 	app.EnableStrictProviders()
+	// Opt into NestJS-style module encapsulation (default in v1):
+	// app.EnableModuleIsolation()
 	app.SetGlobalPrefix("/v1", "/healthz", "/openapi.json")
 	app.MustRegister(
 		hello.Module.AsModule(),
@@ -198,8 +200,8 @@ var Module = &grove.ModuleDef{
 	Providers: []grove.Provider{
 		grove.Provide0(di.Singleton, NewService),
 	},
-	BuildControllers: func(app *grove.App) ([]grove.ControllerDef, error) {
-		return grove.Controllers(app, NewController, func(ctrl *Controller) grove.ControllerDef {
+	Build: func(m *grove.ModuleContext) error {
+		ctrls, err := grove.Controllers(m, NewController, func(ctrl *Controller) grove.ControllerDef {
 			return grove.ControllerDef{
 				Prefix: "/hello",
 				Tags:   []string{"hello"},
@@ -209,6 +211,11 @@ var Module = &grove.ModuleDef{
 				},
 			}
 		})
+		if err != nil {
+			return err
+		}
+		m.Controllers(ctrls...)
+		return nil
 	},
 }
 `

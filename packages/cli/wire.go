@@ -80,9 +80,9 @@ func wireService(target, name string) (*ui.FileChange, string) {
 }
 
 // wireController verifies the generated controller is picked up by
-// module.go BuildControllers, returning guidance when it is not. The
-// legacy NewXxxHandler constructor is accepted for projects scaffolded
-// before the Handler→Controller rename.
+// module.go Build, returning guidance when it is not. The legacy
+// NewXxxHandler constructor is accepted for projects scaffolded before
+// the Handler→Controller rename.
 func wireController(target, name string) string {
 	ctor := "New" + title(name) + "Controller"
 	legacy := "New" + title(name) + "Handler"
@@ -94,5 +94,5 @@ func wireController(target, name string) string {
 	if strings.Contains(src, ctor) || strings.Contains(src, legacy) {
 		return ""
 	}
-	return fmt.Sprintf("module.go does not reference %s: wire it into BuildControllers (e.g. grove.Wire(app, %s))", ctor, ctor)
+	return fmt.Sprintf("module.go does not reference %s: wire it into Build (e.g. grove.Controllers(m, %s, ...))", ctor, ctor)
 }

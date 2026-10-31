@@ -240,8 +240,8 @@ var Module = &grove.ModuleDef{
 		grove.Provide0(di.Singleton, New%[2]sService),
 		// grove:providers
 	},
-	BuildControllers: func(app *grove.App) ([]grove.ControllerDef, error) {
-		return grove.Controllers(app, New%[2]sController, func(ctrl *%[2]sController) grove.ControllerDef {
+	Build: func(m *grove.ModuleContext) error {
+		ctrls, err := grove.Controllers(m, New%[2]sController, func(ctrl *%[2]sController) grove.ControllerDef {
 			return grove.ControllerDef{
 				Prefix: "/%[1]s",
 				Tags:   []string{"%[1]s"},
@@ -259,6 +259,11 @@ var Module = &grove.ModuleDef{
 				},
 			}
 		})
+		if err != nil {
+			return err
+		}
+		m.Controllers(ctrls...)
+		return nil
 	},
 }
 `, name, t)
