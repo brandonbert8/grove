@@ -53,6 +53,11 @@ func (a *App) RunWith(o ServerOptions) error {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
+	if a.validateOnStart {
+		if err := a.Validate(); err != nil {
+			return fmt.Errorf("grove: validation failed: %w", err)
+		}
+	}
 
 	startCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -164,6 +169,7 @@ func (a *App) Handler() http.Handler { return a.Router }
 func (a *App) Route(method, path string, h router.HandlerFunc, mw ...router.Middleware) {
 	full := a.prefixedPath(path)
 	a.Router.Handle(method, full, h, append([]router.Middleware{a.filterMiddleware()}, mw...)...)
+	a.recordRoutes("", full, ControllerDef{Endpoints: []Endpoint{{Method: method}}})
 	a.RecordDocs(ControllerDef{Prefix: full, Endpoints: []Endpoint{{Method: method, Path: ""}}})
 }
 
@@ -172,6 +178,7 @@ func (a *App) RouteDoc(method, path string, h router.HandlerFunc, opts ...any) {
 	e := buildEndpoint(method, "", h, opts)
 	full := a.prefixedPath(path)
 	a.Router.Handle(method, full, e.Handler, append([]router.Middleware{a.filterMiddleware()}, e.Middleware...)...)
+	a.recordRoutes("", full, ControllerDef{Endpoints: []Endpoint{e}})
 	e.Method, e.Path = method, ""
 	a.RecordDocs(ControllerDef{Prefix: full, Endpoints: []Endpoint{e}})
 }

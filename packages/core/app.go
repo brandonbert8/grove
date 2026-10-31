@@ -33,6 +33,24 @@ type App struct {
 	Logger logger.Logger
 
 	modules []Module
+	// moduleDefs tracks every *ModuleDef built into the app, including
+	// modules pulled in through Imports (depth-first registration order).
+	// App.ModuleGraph and App.Validate read it.
+	moduleDefs []*ModuleDef
+	// moduleControllers groups mounted ControllerDefs by module name for
+	// graph/diagnostics output (BuildControllers results included).
+	moduleControllers map[string][]ControllerInfo
+	// moduleScopes holds the per-module resolution context (visibility
+	// rules) created during Register.
+	moduleScopes map[*ModuleDef]*ModuleContext
+	// globalScopes lists @Global modules visible to every module.
+	globalScopes []*ModuleContext
+	// moduleIsolation makes every ModuleDef isolated by default. Opt-in
+	// until v1; ModuleDef.Isolated opts in per module regardless.
+	moduleIsolation bool
+	// routes records every route mounted through the App API for
+	// duplicate detection in Validate. Raw Router use stays invisible.
+	routes []routeRegistration
 	// builtModules dedupes *ModuleDef registration so shared imports
 	// build exactly once even when imported by several modules.
 	builtModules map[*ModuleDef]bool
@@ -49,7 +67,7 @@ type App struct {
 	docs []EndpointDoc
 	// globalPrefix scopes every controller route (e.g. "v1" → "/v1/...").
 	// Excluded prefixes (health, docs) bypass it.
-	globalPrefix string
+	globalPrefix     string
 	excludedPrefixes []string
 	// filters run on handler errors, outermost-first (NestJS @Catch).
 	filters []ExceptionFilter
@@ -64,6 +82,9 @@ type App struct {
 	// providerOwners tracks which module registered each provider key,
 	// powering duplicate diagnostics and VerifyExports.
 	providerOwners map[string]string
+	// validateOnStart runs App.Validate before OnStart hooks (opt-in via
+	// ValidateOnStart or WithValidation).
+	validateOnStart bool
 }
 
 // StartFunc boots a resource (DB pool, cron, queue) before serving.
@@ -127,6 +148,12 @@ func WithGlobalPrefix(prefix string, excluded ...string) Option {
 	return func(a *App) { a.SetGlobalPrefix(prefix, excluded...) }
 }
 
+// WithValidation runs App.Validate before startup hooks. It is the
+// option form of ValidateOnStart.
+func WithValidation() Option {
+	return func(a *App) { a.validateOnStart = true }
+}
+
 // SetGlobalPrefix scopes every subsequently registered controller route.
 // An empty prefix clears versioning. Excluded prefixes bypass it exactly
 // (e.g. "/healthz", "/openapi.json").
@@ -176,8 +203,21 @@ func (a *App) prefixedPath(path string) string {
 
 // mountController registers one ControllerDef honoring the global prefix
 // and the active exception filters.
-func (a *App) mountController(c ControllerDef) {
+func (a *App) mountController(c ControllerDef) { a.mountControllerFor("", c) }
+
+// mountControllerFor is mountController with module ownership recorded
+// for graph and diagnostics.
+func (a *App) mountControllerFor(module string, c ControllerDef) {
 	prefix := a.prefixedPath(c.Prefix)
+	if a.moduleControllers == nil {
+		a.moduleControllers = make(map[string][]ControllerInfo)
+	}
+	info := ControllerInfo{Prefix: prefix}
+	for _, e := range c.Endpoints {
+		info.Routes = append(info.Routes, strings.ToUpper(strings.TrimSpace(e.Method))+" "+router.JoinPath(prefix, e.Path))
+	}
+	a.moduleControllers[module] = append(a.moduleControllers[module], info)
+	a.recordRoutes(module, prefix, c)
 	g := a.Router.Group(prefix, append([]router.Middleware{a.filterMiddleware()}, c.Middleware...)...)
 	for _, e := range c.Endpoints {
 		g.Handle(e.Method, e.Path, e.Handler, e.Middleware...)
@@ -211,7 +251,9 @@ func New(opts ...Option) *App {
 	}
 	// Wire exception filters into the router error path (best-effort:
 	// DefaultRouter exposes the hook; custom routers keep Statuser).
-	if dr, ok := app.Router.(interface{ SetErrorHandler(func(router.Context, error)) }); ok {
+	if dr, ok := app.Router.(interface {
+		SetErrorHandler(func(router.Context, error))
+	}); ok {
 		dr.SetErrorHandler(app.handleError)
 	}
 	return app
@@ -234,7 +276,9 @@ func NewE(opts ...Option) (*App, error) {
 	for _, opt := range opts {
 		opt(app)
 	}
-	if dr, ok := app.Router.(interface{ SetErrorHandler(func(router.Context, error)) }); ok {
+	if dr, ok := app.Router.(interface {
+		SetErrorHandler(func(router.Context, error))
+	}); ok {
 		dr.SetErrorHandler(app.handleError)
 	}
 	return app, nil
@@ -283,11 +327,25 @@ func (a *App) Modules() []Module {
 	return append([]Module(nil), a.modules...)
 }
 
+// Resolve returns the dependency registered under name from the app
+// container. It makes *App satisfy Resolver, so grove.Inject and
+// grove.Wire accept both an App and a ModuleContext.
+func (a *App) Resolve(name string) (any, error) { return a.Container.Resolve(name) }
+
 // EnableStrictProviders makes duplicate provider keys an error at
 // Register time (fail fast on copy-paste modules). Testing overrides
 // via Container.Replace before Register still win: pre-replaced keys
 // are treated as intentional mocks and skipped, not errored.
 func (a *App) EnableStrictProviders() { a.strictProviders = true }
+
+// EnableModuleIsolation makes every subsequently registered ModuleDef
+// isolated by default (NestJS-style provider visibility). Modules can
+// still opt in individually with ModuleDef.Isolated; @Global modules
+// remain visible everywhere. Non-isolated apps keep v0.2 behavior.
+func (a *App) EnableModuleIsolation() { a.moduleIsolation = true }
+
+// ModuleIsolation reports whether isolation is enabled app-wide.
+func (a *App) ModuleIsolation() bool { return a.moduleIsolation }
 
 // EnableExportScoping opts into validating ModuleDef.Exports: every
 // entry must name a provider the module (or its imports) registered.

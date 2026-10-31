@@ -6,13 +6,28 @@ import (
 	"github.com/brandonbert8/grove/packages/di"
 )
 
-// Inject resolves the default key for T from the app container, the Go
-// equivalent of NestJS constructor injection:
+// resolveAs resolves the default key for T from r and type-asserts it.
+func resolveAs[T any](r Resolver) (T, error) {
+	var zero T
+	v, err := r.Resolve(di.KeyFor[T]())
+	if err != nil {
+		return zero, err
+	}
+	typed, ok := v.(T)
+	if !ok {
+		return zero, fmt.Errorf("grove: registration for %q is %T, not %s", di.KeyFor[T](), v, di.KeyFor[T]())
+	}
+	return typed, nil
+}
+
+// Inject resolves the default key for T from r, the Go equivalent of
+// NestJS constructor injection. Pass an *App at the root or a
+// *ModuleContext inside ModuleDef.Build:
 //
 //	svc, err := grove.Inject[*UsersService](app)
 //	if err != nil { return nil, err }
-func Inject[T any](app *App) (T, error) {
-	return di.ResolveAs[T](app.Container)
+func Inject[T any](r Resolver) (T, error) {
+	return resolveAs[T](r)
 }
 
 // MustInject is like Inject but panics on error. Useful in
@@ -20,8 +35,8 @@ func Inject[T any](app *App) (T, error) {
 // error:
 //
 //	svc := grove.MustInject[*UsersService](app)
-func MustInject[T any](app *App) T {
-	v, err := di.ResolveAs[T](app.Container)
+func MustInject[T any](r Resolver) T {
+	v, err := resolveAs[T](r)
 	if err != nil {
 		panic(err)
 	}
@@ -49,8 +64,8 @@ func MustInject[T any](app *App) T {
 //	    if err != nil { return nil, err }
 //	    return []grove.ControllerDef{ctrl}, nil
 //	},
-func ControllerFor[T any](app *App, define func(T) ControllerDef) (ControllerDef, error) {
-	ctrl, err := di.ResolveAs[T](app.Container)
+func ControllerFor[T any](r Resolver, define func(T) ControllerDef) (ControllerDef, error) {
+	ctrl, err := resolveAs[T](r)
 	if err != nil {
 		var zero ControllerDef
 		return zero, err
@@ -63,9 +78,9 @@ func ControllerFor[T any](app *App, define func(T) ControllerDef) (ControllerDef
 // container:
 //
 //	h, err := grove.Wire(app, NewUsersController) // NewUsersController(svc *Service) *Controller
-func Wire[T any, C any](app *App, ctor func(T) C) (C, error) {
+func Wire[T any, C any](r Resolver, ctor func(T) C) (C, error) {
 	var zero C
-	dep, err := di.ResolveAs[T](app.Container)
+	dep, err := resolveAs[T](r)
 	if err != nil {
 		return zero, err
 	}
@@ -80,13 +95,13 @@ func Wire[T any, C any](app *App, ctor func(T) C) (C, error) {
 // that, resolve explicitly with grove.Inject / di.ResolveAs and call the
 // constructor yourself. There is no variadic Wire by design: explicit
 // type parameters keep constructor wiring compile-time checked.
-func Wire2[T1 any, T2 any, C any](app *App, ctor func(T1, T2) C) (C, error) {
+func Wire2[T1 any, T2 any, C any](r Resolver, ctor func(T1, T2) C) (C, error) {
 	var zero C
-	d1, err := di.ResolveAs[T1](app.Container)
+	d1, err := resolveAs[T1](r)
 	if err != nil {
 		return zero, err
 	}
-	d2, err := di.ResolveAs[T2](app.Container)
+	d2, err := resolveAs[T2](r)
 	if err != nil {
 		return zero, err
 	}
@@ -99,17 +114,17 @@ func Wire2[T1 any, T2 any, C any](app *App, ctor func(T1, T2) C) (C, error) {
 // di.ResolveAs and call the constructor yourself, or use the `grove wire`
 // codegen (zero ResolveAs). There is no variadic Wire by design: explicit
 // type parameters keep constructor wiring compile-time checked.
-func Wire3[T1 any, T2 any, T3 any, C any](app *App, ctor func(T1, T2, T3) C) (C, error) {
+func Wire3[T1 any, T2 any, T3 any, C any](r Resolver, ctor func(T1, T2, T3) C) (C, error) {
 	var zero C
-	d1, err := di.ResolveAs[T1](app.Container)
+	d1, err := resolveAs[T1](r)
 	if err != nil {
 		return zero, err
 	}
-	d2, err := di.ResolveAs[T2](app.Container)
+	d2, err := resolveAs[T2](r)
 	if err != nil {
 		return zero, err
 	}
-	d3, err := di.ResolveAs[T3](app.Container)
+	d3, err := resolveAs[T3](r)
 	if err != nil {
 		return zero, err
 	}
@@ -121,21 +136,21 @@ func Wire3[T1 any, T2 any, T3 any, C any](app *App, ctor func(T1, T2, T3) C) (C,
 // This is the last arity-specific helper. For five or more dependencies
 // resolve explicitly with grove.Inject / di.ResolveAs and call the
 // constructor yourself, or use the `grove wire` codegen.
-func Wire4[T1 any, T2 any, T3 any, T4 any, C any](app *App, ctor func(T1, T2, T3, T4) C) (C, error) {
+func Wire4[T1 any, T2 any, T3 any, T4 any, C any](r Resolver, ctor func(T1, T2, T3, T4) C) (C, error) {
 	var zero C
-	d1, err := di.ResolveAs[T1](app.Container)
+	d1, err := resolveAs[T1](r)
 	if err != nil {
 		return zero, err
 	}
-	d2, err := di.ResolveAs[T2](app.Container)
+	d2, err := resolveAs[T2](r)
 	if err != nil {
 		return zero, err
 	}
-	d3, err := di.ResolveAs[T3](app.Container)
+	d3, err := resolveAs[T3](r)
 	if err != nil {
 		return zero, err
 	}
-	d4, err := di.ResolveAs[T4](app.Container)
+	d4, err := resolveAs[T4](r)
 	if err != nil {
 		return zero, err
 	}
@@ -143,8 +158,8 @@ func Wire4[T1 any, T2 any, T3 any, T4 any, C any](app *App, ctor func(T1, T2, T3
 }
 
 // MustWire is like Wire but panics on error (for BuildControllers).
-func MustWire[T any, C any](app *App, ctor func(T) C) C {
-	c, err := Wire(app, ctor)
+func MustWire[T any, C any](r Resolver, ctor func(T) C) C {
+	c, err := Wire(r, ctor)
 	if err != nil {
 		panic(err)
 	}
@@ -165,8 +180,8 @@ func MustWire[T any, C any](app *App, ctor func(T) C) C {
 //	        }
 //	    })
 //	}
-func Controllers[T any, C any](app *App, ctor func(T) C, define func(C) ControllerDef) ([]ControllerDef, error) {
-	ctrl, err := Wire(app, ctor)
+func Controllers[T any, C any](r Resolver, ctor func(T) C, define func(C) ControllerDef) ([]ControllerDef, error) {
+	ctrl, err := Wire(r, ctor)
 	if err != nil {
 		return nil, err
 	}
@@ -179,8 +194,8 @@ func Controllers[T any, C any](app *App, ctor func(T) C, define func(C) Controll
 // Controllers3 / Controllers4 cover three and four dependencies. Beyond
 // that, resolve explicitly with grove.Inject / di.ResolveAs and build the
 // ControllerDef yourself.
-func Controllers2[T1 any, T2 any, C any](app *App, ctor func(T1, T2) C, define func(C) ControllerDef) ([]ControllerDef, error) {
-	ctrl, err := Wire2(app, ctor)
+func Controllers2[T1 any, T2 any, C any](r Resolver, ctor func(T1, T2) C, define func(C) ControllerDef) ([]ControllerDef, error) {
+	ctrl, err := Wire2(r, ctor)
 	if err != nil {
 		return nil, err
 	}
@@ -193,8 +208,8 @@ func Controllers2[T1 any, T2 any, C any](app *App, ctor func(T1, T2) C, define f
 //
 // Controllers4 covers four dependencies. Beyond that, resolve explicitly
 // with grove.Inject / di.ResolveAs and build the ControllerDef yourself.
-func Controllers3[T1 any, T2 any, T3 any, C any](app *App, ctor func(T1, T2, T3) C, define func(C) ControllerDef) ([]ControllerDef, error) {
-	ctrl, err := Wire3(app, ctor)
+func Controllers3[T1 any, T2 any, T3 any, C any](r Resolver, ctor func(T1, T2, T3) C, define func(C) ControllerDef) ([]ControllerDef, error) {
+	ctrl, err := Wire3(r, ctor)
 	if err != nil {
 		return nil, err
 	}
@@ -207,8 +222,8 @@ func Controllers3[T1 any, T2 any, T3 any, C any](app *App, ctor func(T1, T2, T3)
 // For five or more dependencies resolve explicitly with grove.Inject /
 // di.ResolveAs and build the ControllerDef yourself, or use the `grove
 // wire` codegen.
-func Controllers4[T1 any, T2 any, T3 any, T4 any, C any](app *App, ctor func(T1, T2, T3, T4) C, define func(C) ControllerDef) ([]ControllerDef, error) {
-	ctrl, err := Wire4(app, ctor)
+func Controllers4[T1 any, T2 any, T3 any, T4 any, C any](r Resolver, ctor func(T1, T2, T3, T4) C, define func(C) ControllerDef) ([]ControllerDef, error) {
+	ctrl, err := Wire4(r, ctor)
 	if err != nil {
 		return nil, err
 	}
@@ -218,8 +233,8 @@ func Controllers4[T1 any, T2 any, T3 any, T4 any, C any](app *App, ctor func(T1,
 // MustControllers is like Controllers but panics on error. Useful in
 // BuildControllers where wiring failures are programming errors and
 // returning nil,err boilerplate only obscures the route table.
-func MustControllers[T any, C any](app *App, ctor func(T) C, define func(C) ControllerDef) []ControllerDef {
-	defs, err := Controllers(app, ctor, define)
+func MustControllers[T any, C any](r Resolver, ctor func(T) C, define func(C) ControllerDef) []ControllerDef {
+	defs, err := Controllers(r, ctor, define)
 	if err != nil {
 		panic(err)
 	}
@@ -230,9 +245,9 @@ func MustControllers[T any, C any](app *App, ctor func(T) C, define func(C) Cont
 // hatch when the default di.KeyFor[T] key is not the registration key:
 //
 //	svc, err := grove.InjectNamed[*UsersService](app, "readDB")
-func InjectNamed[T any](app *App, name string) (T, error) {
+func InjectNamed[T any](r Resolver, name string) (T, error) {
 	var zero T
-	v, err := app.Container.Resolve(name)
+	v, err := r.Resolve(name)
 	if err != nil {
 		return zero, err
 	}
@@ -244,8 +259,8 @@ func InjectNamed[T any](app *App, name string) (T, error) {
 }
 
 // MustInjectNamed is like InjectNamed but panics on error.
-func MustInjectNamed[T any](app *App, name string) T {
-	v, err := InjectNamed[T](app, name)
+func MustInjectNamed[T any](r Resolver, name string) T {
+	v, err := InjectNamed[T](r, name)
 	if err != nil {
 		panic(err)
 	}
@@ -256,9 +271,9 @@ func MustInjectNamed[T any](app *App, name string) T {
 // to T:
 //
 //	svc, err := grove.ResolveNamed[*UsersService](app.Container, "readDB")
-func ResolveNamed[T any](c *di.Container, name string) (T, error) {
+func ResolveNamed[T any](r Resolver, name string) (T, error) {
 	var zero T
-	v, err := c.Resolve(name)
+	v, err := r.Resolve(name)
 	if err != nil {
 		return zero, err
 	}
@@ -270,8 +285,8 @@ func ResolveNamed[T any](c *di.Container, name string) (T, error) {
 }
 
 // MustResolveNamed is like ResolveNamed but panics on error.
-func MustResolveNamed[T any](c *di.Container, name string) T {
-	v, err := ResolveNamed[T](c, name)
+func MustResolveNamed[T any](r Resolver, name string) T {
+	v, err := ResolveNamed[T](r, name)
 	if err != nil {
 		panic(err)
 	}
