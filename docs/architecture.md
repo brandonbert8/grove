@@ -123,6 +123,14 @@ Rules:
   resolve and caches, so provider order within and across modules never
   matters and import cycles surface as errors at resolve time, not as
   initialization-order bugs.
+- **Module encapsulation is opt-in until v1.** `ModuleDef.Isolated` (or
+  `app.EnableModuleIsolation()`) makes a module resolve only its own
+  providers, imported modules' `Exports`, and `@Global` exports.
+  `ModuleDef.Build(func(m *grove.ModuleContext) error)` receives the
+  scoped context, so `grove.Inject` / `grove.Wire` fail with an
+  actionable message when a provider is not visible. Legacy modules keep
+  app-wide visibility (empty `Exports` = fully public); isolated modules
+  export only explicit entries and cannot share provider keys.
 - **Typed errors instead of exception filters.** Handlers return
   `*grove.HttpError`; the router maps any `router.Statuser` to its status
   automatically. No filter chain to configure for the 95% case.

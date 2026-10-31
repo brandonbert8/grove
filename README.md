@@ -134,30 +134,40 @@ users := &grove.ModuleDef{
     Providers: []grove.Provider{
         grove.Provide0(di.Singleton, NewUsersService),
     },
-    BuildControllers: func(app *grove.App) ([]grove.ControllerDef, error) {
-        ctrl, err := grove.Wire(app, NewUsersController)
+    // Isolated: true, // opt in per module (or app.EnableModuleIsolation())
+    // Exports: []string{di.KeyFor[*UsersService]()}, // visible to importers
+    Build: func(m *grove.ModuleContext) error {
+        ctrls, err := grove.Controllers(m, NewUsersController, func(ctrl *UsersController) grove.ControllerDef {
+            return grove.ControllerDef{
+                Prefix:     "/users",
+                Tags:       []string{"users"},
+                Security:   []string{"bearerAuth"},
+                Middleware: []router.Middleware{guard}, // guards & interceptors
+                Endpoints: []grove.Endpoint{
+                    grove.GET("", ctrl.List,
+                        grove.WithSummary("List users"),
+                        grove.WithResponses(map[int]string{200: "users"})),
+                    grove.GET("/{id}", ctrl.Get, grove.WithSummary("Get user")),
+                    grove.POST("", ctrl.Create,
+                        grove.Use(fauth.RequireRole("admin")),
+                        grove.WithSummary("Create user (admin)")),
+                },
+            }
+        })
         if err != nil {
-            return nil, err
+            return err
         }
-        return []grove.ControllerDef{{
-            Prefix:     "/users",
-            Tags:       []string{"users"},
-            Security:   []string{"bearerAuth"},
-            Middleware: []router.Middleware{guard}, // guards & interceptors
-            Endpoints: []grove.Endpoint{
-                grove.GET("", ctrl.List,
-                    grove.WithSummary("List users"),
-                    grove.WithResponses(map[int]string{200: "users"})),
-                grove.GET("/{id}", ctrl.Get, grove.WithSummary("Get user")),
-                grove.POST("", ctrl.Create,
-                    grove.Use(fauth.RequireRole("admin")),
-                    grove.WithSummary("Create user (admin)")),
-            },
-        }}, nil
+        m.Controllers(ctrls...)
+        return nil
     },
 }
 app.MustRegister(users.AsModule())
 ```
+
+`ModuleDef.Build` receives a `*ModuleContext`, so `grove.Inject` /
+`grove.Wire` enforce visibility when the module is isolated. Legacy
+modules keep app-wide provider visibility; isolated modules resolve only
+their own providers, imported `Exports`, and `@Global` exports.
 
 Handlers return typed errors the router maps automatically, and DTOs
 bind declaratively (the official form — decode + bind + strict-validate

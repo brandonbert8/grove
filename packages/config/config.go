@@ -15,32 +15,20 @@ import (
 // environment variables.
 type Config struct {
 	// AppName identifies the application in logs and the CLI.
-	AppName string
+	AppName string `env:"APP_NAME" aliases:"GROVE_APP_NAME" default:"grove-app"`
 	// Env is the runtime environment: development, test, or production.
-	Env string
+	Env string `env:"ENV" aliases:"GROVE_ENV,GO_ENV,APP_ENV" default:"development" lower:"true"`
 	// Host is the interface to bind (empty means all interfaces).
-	Host string
+	Host string `env:"HOST" aliases:"GROVE_HOST"`
 	// Port is the TCP port to listen on.
-	Port int
+	Port int `env:"PORT" aliases:"GROVE_PORT" default:"3000"`
 	// DatabaseURL is the primary database connection string.
-	DatabaseURL string
+	DatabaseURL string `env:"DATABASE_URL" aliases:"GROVE_DATABASE_URL"`
 	// LogLevel controls the logger verbosity: debug, info, warn, error.
-	LogLevel string
+	LogLevel string `env:"LOG_LEVEL" aliases:"GROVE_LOG_LEVEL" default:"info" lower:"true"`
 	// JWTSecret signs auth tokens. Empty is legal here (auth refuses to
 	// boot without one); use WithRequired("JWT_SECRET") to fail fast.
-	JWTSecret string
-}
-
-// defaults returns the baseline configuration.
-func defaults() Config {
-	return Config{
-		AppName:     "grove-app",
-		Env:         "development",
-		Host:        "",
-		Port:        3000,
-		DatabaseURL: "",
-		LogLevel:    "info",
-	}
+	JWTSecret string `env:"JWT_SECRET" aliases:"GROVE_JWT_SECRET" secret:"true"`
 }
 
 // Option customizes loading behavior.
@@ -80,73 +68,14 @@ func WithStrict() Option {
 	return func(o *options) { o.strict = true }
 }
 
-// knownGroveNames is the GROVE_* vocabulary Load understands.
-var knownGroveNames = map[string]bool{
-	"GROVE_APP_NAME": true, "GROVE_ENV": true, "GROVE_HOST": true,
-	"GROVE_PORT": true, "GROVE_DATABASE_URL": true,
-	"GROVE_LOG_LEVEL": true, "GROVE_JWT_SECRET": true,
-}
-
 // Load reads .env (if present) plus environment variables into a Config.
 //
 // It looks for ".env" in the current directory and then in each parent
 // directory up to the filesystem root, so tests and nested commands work
-// regardless of where the binary is invoked from.
+// regardless of where the binary is invoked from. Load is
+// LoadAs[Config]; use LoadAs for application-specific typed config.
 func Load(opts ...Option) (*Config, error) {
-	o := &options{envPath: findDotEnv()}
-	for _, opt := range opts {
-		opt(o)
-	}
-
-	merged, err := mergedEnv(o)
-	if err != nil {
-		return nil, err
-	}
-
-	cfg := defaults()
-	if v, ok := lookup(merged, "APP_NAME", "GROVE_APP_NAME"); ok {
-		cfg.AppName = v
-	}
-	if v, ok := lookup(merged, "ENV", "GROVE_ENV", "GO_ENV", "APP_ENV"); ok {
-		cfg.Env = strings.ToLower(v)
-	}
-	if v, ok := lookup(merged, "HOST", "GROVE_HOST"); ok {
-		cfg.Host = v
-	}
-	if v, ok := lookup(merged, "PORT", "GROVE_PORT"); ok {
-		port, err := strconv.Atoi(strings.TrimSpace(v))
-		if err != nil || port < 1 || port > 65535 {
-			return nil, fmt.Errorf("config: invalid PORT %q: must be 1-65535", v)
-		}
-		cfg.Port = port
-	}
-	if v, ok := lookup(merged, "DATABASE_URL", "GROVE_DATABASE_URL"); ok {
-		cfg.DatabaseURL = v
-	}
-	if v, ok := lookup(merged, "LOG_LEVEL", "GROVE_LOG_LEVEL"); ok {
-		cfg.LogLevel = strings.ToLower(v)
-	}
-	if v, ok := lookup(merged, "JWT_SECRET", "GROVE_JWT_SECRET"); ok {
-		cfg.JWTSecret = v
-	}
-
-	for _, name := range o.required {
-		if strings.TrimSpace(merged[name]) == "" {
-			return nil, fmt.Errorf("config: required variable %q is not set", name)
-		}
-	}
-	if o.strict {
-		for k := range merged {
-			if strings.HasPrefix(k, "GROVE_") && !knownGroveNames[k] {
-				return nil, fmt.Errorf("config: unknown variable %q (strict mode)", k)
-			}
-		}
-	}
-
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
-	return &cfg, nil
+	return LoadAs[Config](opts...)
 }
 
 // MustLoad is like Load but panics on error. Useful in main functions.
@@ -208,6 +137,9 @@ func Schema() []SchemaVar {
 	}
 }
 
+// Redacted renders the config with secret values masked (JWT_SECRET).
+func (c Config) Redacted() string { return Redacted(c) }
+
 // Addr returns the host:port pair suitable for net/http.
 func (c Config) Addr() string {
 	if c.Host == "" {
@@ -259,16 +191,6 @@ func Merged(opts ...Option) (map[string]string, error) {
 		opt(o)
 	}
 	return mergedEnv(o)
-}
-
-// lookup returns the first non-empty value for any of the names.
-func lookup(vars map[string]string, names ...string) (string, bool) {
-	for _, n := range names {
-		if v, ok := vars[n]; ok && strings.TrimSpace(v) != "" {
-			return strings.TrimSpace(v), true
-		}
-	}
-	return "", false
 }
 
 // findDotEnv searches the current directory and its parents for ".env",
