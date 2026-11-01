@@ -91,7 +91,14 @@ func newDoctorCommand(g *globalOpts) *cobra.Command {
 			if len(graphRes.Modules) == 0 {
 				problems = append(problems, "no *grove.ModuleDef literals found (source graph is empty)")
 			}
-			problems = append(problems, graphCycleProblems(graphRes)...)
+			archRules, err := LoadArchRules(cwd)
+			if err != nil {
+				return fail(r, 1, "Could not read grove.arch.yaml", err.Error(), "Fix the YAML or remove the file.", err)
+			}
+			if archRules == nil || archRules.ForbidCycles {
+				problems = append(problems, graphCycleProblems(graphRes)...)
+			}
+			problems = append(problems, archRules.Check(graphRes)...)
 			problems = append(problems, graphRes.Notices...)
 
 			for _, p := range problems {

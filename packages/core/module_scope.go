@@ -38,7 +38,7 @@ func (m *ModuleContext) Isolated() bool { return m != nil && m.isolated }
 // the container (di.RegisterSingletonAs, test overrides) stay visible
 // as an escape hatch.
 func (m *ModuleContext) Resolve(name string) (any, error) {
-	if m == nil || m.App == nil {
+	if m == nil || m.App == nil || m.Module == nil {
 		return nil, fmt.Errorf("grove: nil ModuleContext")
 	}
 	if !m.isolated {

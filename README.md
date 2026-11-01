@@ -169,6 +169,23 @@ app.MustRegister(users.AsModule())
 modules keep app-wide provider visibility; isolated modules resolve only
 their own providers, imported `Exports`, and `@Global` exports.
 
+API versioning is declarative (NestJS `VersioningType`):
+
+```go
+app.EnableVersioning(grove.WithDefaultVersion("1")) // URI: /v1/users
+// app.EnableVersioning(grove.WithVersioningType(grove.VersioningHeader))
+// app.EnableVersioning(grove.WithVersioningType(grove.VersioningMediaType))
+
+grove.GET("", ctrl.List, grove.WithSummary("List users"))
+grove.GET("", ctrl.ListV2, grove.WithSummary("List users"), grove.WithVersion("2"))
+```
+
+`ControllerDef.Version` applies to a whole controller; URI versioning
+honors `SetGlobalPrefix` (`/api/v1/users`) and excluded prefixes
+(`/healthz`). Header/media-type versions share one path and dispatch per
+request; an unknown version returns `404` with
+`{"code":"API_VERSION_NOT_FOUND"}`.
+
 Handlers return typed errors the router maps automatically, and DTOs
 bind declaratively (the official form — decode + bind + strict-validate
 + dispatch in one line, status in one place):
@@ -197,6 +214,18 @@ grove.GET("/{id}", pipes.HandlePath(ctrl.Get, 200))
 // Manual pipes.Body[T] / BindQuery / BindHeader / BindPath stay as the
 // escape hatch for handlers needing the raw values mid-logic.
 ```
+
+Errors carry a status, a stable code, details, and an optional cause:
+
+```go
+return grove.NewHttpErrorCode(404, "USER_NOT_FOUND", "user not found")
+return grove.WrapHttpError(err, 503, "database unavailable")
+// JSON: {"error":"user not found","status":404,"code":"USER_NOT_FOUND"}
+```
+
+`errors.Is` / `errors.As` still see the wrapped cause. Untyped errors
+stay a generic 500 (internals never leak); typed errors keep their
+message, `code`, and `details`.
 
 ## 🛡️ Middleware & Auth
 
@@ -268,6 +297,27 @@ cfg := config.MustLoad(
 svc := auth.NewService([]byte(cfg.JWTSecret), cfg.AppName)
 ```
 
+Application-specific config is a plain struct with tags (no reflection
+magic at the call site, no global registry):
+
+```go
+type AppConfig struct {
+    Port int `env:"PORT" default:"3000"`
+    DB   struct {
+        URL string `env:"DATABASE_URL" required:"true" secret:"true"`
+    }
+}
+cfg := config.MustLoadAs[AppConfig](
+    config.WithRequired("DATABASE_URL"),
+    config.WithStrict(),
+)
+log.Println(config.Redacted(cfg)) // DATABASE_URL=[REDACTED]
+```
+
+`LoadAs` supports nested structs, `default`, `required`, `secret`,
+`lower`, `aliases`, comma-separated slices, `time.Duration`, and
+`Validate() error` on the target type.
+
 Plus lifecycle hooks for the real world:
 
 ```go
@@ -288,7 +338,9 @@ Usage:
 Commands:
   build       Vet, test and compile the project
   dev         Run with restart on file changes
+  doctor      Audit modules, wiring, docs and configuration
   generate    Generate a Grove component
+  graph       Print the module import graph
   lint        Audit docs coverage and configuration
   new         Create a new Grove application
   start       Run the application
@@ -316,10 +368,29 @@ grove start --prod                      # run the app (go run .)
 grove test                              # run the project tests
 grove build                             # vet + test + compile
 grove wire --emit                       # generate wire_gen.go static DI wiring
+grove graph --format mermaid            # module graph (mermaid|dot|json)
+grove doctor                            # modules + wiring + docs + config audit
 grove version                           # CLI + Go + OS
 grove --no-color new demo               # plain output for CI/logs
 grove --verbose new demo                # debug details
 ```
+
+`grove doctor` also enforces an optional architecture contract in
+`grove.arch.yaml` (no YAML dependency, parsed as a small subset):
+
+```yaml
+forbid_cycles: true
+modules:
+  users:
+    allow_imports: [auth, database] # whitelist; any other import fails
+  billing:
+    deny_imports:
+      - users
+      - "*" # deny everything
+```
+
+`grove graph --format mermaid|dot|json` prints the same source-level
+module graph for review.
 
 Generated code compiles — CI even builds a fresh scaffold to prove it.
 

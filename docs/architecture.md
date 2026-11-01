@@ -43,21 +43,22 @@ from build time to request time. Grove's rule is:
 
 > If it can be a function call, it must be a function call.
 
-Reflection is currently limited to DI key derivation
-(`di.keyFor[T]`). Everything else — routing, middleware, config,
-logging — is interfaces plus composition.
+Reflection is limited to two leaf, startup-only helpers: DI key
+derivation (`di.keyFor[T]`) and `config.LoadAs[T]` struct-tag decoding.
+Everything else — routing, middleware, logging, versioning — is
+interfaces plus composition.
 
 ## Package responsibilities
 
 | Package | Owns | Must NOT import |
 |---|---|---|
-| `core` (`packages/core`) | `App`, `Module`, `ModuleDef` + `ControllerDef` + `Endpoint` (+docs metadata), `HttpError` (+details), guards/interceptors (`CanActivate`, `UseGuard`, `Chain`), lifecycle (`Run`/`Listen`, `OnStart`/`OnStop`, `HealthModule`, `Docs`), declarative handlers (`HandleBody`, `Controllers`), `ExceptionFilter` | `middleware`, `pipes`, `auth`, `cli` (leaf `httperr` + `validate` allowed) |
-| `router` (`packages/router`) | `Router` interface, `Context` (+`Body` binding), Chi-backed `DefaultRouter`, `Statuser` error mapping, `FromHTTP` std adapter | `core`, `di`, `config` |
+| `core` (`packages/core`) | `App`, `Module`, `ModuleDef` + `ControllerDef` + `Endpoint` (+docs metadata), `ModuleContext` isolation, validation/graph, API versioning (URI/header/media type), `HttpError` (+code/details/cause), guards/interceptors (`CanActivate`, `UseGuard`, `Chain`), lifecycle (`Run`/`Listen`, `OnStart`/`OnStop`, `HealthModule`, `Docs`), declarative handlers (`HandleBody`, `Controllers`), `ExceptionFilter` | `middleware`, `pipes`, `auth`, `cli` (leaf `httperr` + `validate` allowed) |
+| `router` (`packages/router`) | `Router` interface, `Context` (+`Body` binding), Chi-backed `DefaultRouter`, `Statuser` + `ErrorResponse` mapping, `FromHTTP` std adapter | `core`, `di`, `config` |
 | `di` (`packages/di`) | `Container`, singleton/transient/lazy-singleton lifetimes, generic helpers, exported `KeyFor` | any sibling package |
-| `config` (`packages/config`) | Typed `Config`, `.env` parsing, env precedence | any sibling package |
+| `config` (`packages/config`) | Typed `Config`, `LoadAs[T]` struct-tag decoding, redaction, `.env` parsing, env precedence | any sibling package |
 | `logger` (`packages/logger`) | `Logger` interface, `slog` backend | any sibling package |
 | `middleware` (`packages/middleware`) | Recovery (+stack), Logging (+request_id, streaming-safe), CORS (+expose), RequestID, Timeout (JSON 503), SecureHeaders, RateLimit (honest Retry-After, proxy-aware) over `router` | `core` |
-| `cli` (`packages/cli`) | cobra tree (`new`, `generate`, `version`, `lint`, `wire`, `build`, `start`, `test`, `dev`), generators returning `FileChange` events, `ui` design system (theme, no-color, verbose), ldflags/buildinfo versioning | `core` internals beyond templates |
+| `cli` (`packages/cli`) | cobra tree (`new`, `generate`, `version`, `lint`, `wire`, `graph`, `doctor`, `build`, `start`, `test`, `dev`), module-graph AST scanner, generators returning `FileChange` events, `ui` design system (theme, no-color, verbose), ldflags/buildinfo versioning | `core` internals beyond templates |
 | `pipes` (`packages/pipes`) | Tag validation engine (`required,min,max,len,gte,lte,email,uuid,url,oneof` + `RegisterRule` + `ValidateStrict`), `ValidateBody`, `BindQuery` (strict), `BindHeader`, `BindPath`, `Page`, typed `Parse`/`Path`/`Query` | `router`, `core` (HttpError only) |
 | `auth` (`packages/auth`) | HS256 JWT + bcrypt passwords, access/refresh pairs with rotation, `AuthGuard`, `RequireRole`/`RequireAnyRole` | `router`, `core` (HttpError, guards only) |
 | `grovtest` (`packages/grovtest`) | HTTP test harness: JSON client, `Decode`, `RequireStatus` | sibling packages (imports `core` App only) |
@@ -131,6 +132,11 @@ Rules:
   actionable message when a provider is not visible. Legacy modules keep
   app-wide visibility (empty `Exports` = fully public); isolated modules
   export only explicit entries and cannot share provider keys.
+- **Architecture rules are data.** `grove.arch.yaml` declares module
+  import allow/deny lists and an optional cycle check; `grove doctor`
+  enforces it against the source-level AST graph. The core runtime never
+  reads YAML, so `App.Validate()` stays dependency-free and usable in
+  tests.
 - **Typed errors instead of exception filters.** Handlers return
   `*grove.HttpError`; the router maps any `router.Statuser` to its status
   automatically. No filter chain to configure for the 95% case.

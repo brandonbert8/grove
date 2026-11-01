@@ -159,11 +159,19 @@ func decodeStruct(v reflect.Value, prefix string, env map[string]string, known m
 	return nil
 }
 
+var textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
+
 func isNestedStruct(t reflect.Type) bool {
 	for t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
-	return t.Kind() == reflect.Struct && t != reflect.TypeOf(time.Time{})
+	if t.Kind() != reflect.Struct || t == reflect.TypeOf(time.Time{}) {
+		return false
+	}
+	if t.Implements(textUnmarshalerType) || reflect.PointerTo(t).Implements(textUnmarshalerType) {
+		return false
+	}
+	return true
 }
 
 func setValue(v reflect.Value, raw, key string) error {
@@ -280,6 +288,13 @@ func redactValue(v reflect.Value, prefix string, lines *[]string) {
 		}
 		key = strings.ToUpper(strings.TrimSpace(key))
 		value := fmt.Sprint(field.Interface())
+		if field.CanAddr() {
+			if m, ok := field.Addr().Interface().(encoding.TextMarshaler); ok {
+				if b, err := m.MarshalText(); err == nil {
+					value = string(b)
+				}
+			}
+		}
 		if isTrue(sf.Tag.Get("secret")) {
 			value = "[REDACTED]"
 		}

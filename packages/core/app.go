@@ -69,6 +69,11 @@ type App struct {
 	// Excluded prefixes (health, docs) bypass it.
 	globalPrefix     string
 	excludedPrefixes []string
+	// versioning configures API versioning (URI, header, or media type).
+	versioning versioningConfig
+	// versionDispatchers merges header/media-type versions that share a
+	// method+path into one router handler.
+	versionDispatchers map[string]*versionDispatcher
 	// filters run on handler errors, outermost-first (NestJS @Catch).
 	filters []ExceptionFilter
 	// strictProviders makes duplicate provider keys fail fast instead
@@ -187,18 +192,27 @@ func (a *App) prefixedPath(path string) string {
 	if a.globalPrefix == "" {
 		return path
 	}
-	for _, ex := range a.excludedPrefixes {
-		if ex == "" {
-			continue
-		}
-		if path == ex || strings.HasPrefix(path, ex+"/") {
-			return path
-		}
+	if a.isExcluded(path) {
+		return path
 	}
 	if path == "" || path == "/" {
 		return a.globalPrefix
 	}
 	return a.globalPrefix + path
+}
+
+// isExcluded reports whether path bypasses the global prefix and URI
+// versioning. Exclusions match exactly or on a "/" boundary.
+func (a *App) isExcluded(path string) bool {
+	for _, ex := range a.excludedPrefixes {
+		if ex == "" {
+			continue
+		}
+		if path == ex || strings.HasPrefix(path, ex+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // mountController registers one ControllerDef honoring the global prefix
@@ -208,23 +222,54 @@ func (a *App) mountController(c ControllerDef) { a.mountControllerFor("", c) }
 // mountControllerFor is mountController with module ownership recorded
 // for graph and diagnostics.
 func (a *App) mountControllerFor(module string, c ControllerDef) {
-	prefix := a.prefixedPath(c.Prefix)
+	base := a.prefixedPath(c.Prefix)
 	if a.moduleControllers == nil {
 		a.moduleControllers = make(map[string][]ControllerInfo)
 	}
-	info := ControllerInfo{Prefix: prefix}
+	info := ControllerInfo{Prefix: base}
 	for _, e := range c.Endpoints {
-		info.Routes = append(info.Routes, strings.ToUpper(strings.TrimSpace(e.Method))+" "+router.JoinPath(prefix, e.Path))
-	}
-	a.moduleControllers[module] = append(a.moduleControllers[module], info)
-	a.recordRoutes(module, prefix, c)
-	g := a.Router.Group(prefix, append([]router.Middleware{a.filterMiddleware()}, c.Middleware...)...)
-	for _, e := range c.Endpoints {
+		version := a.effectiveVersion(c, e)
+		if a.isExcluded(c.Prefix) {
+			version = ""
+		}
+		prefix := base
+		if a.versioning.enabled && a.versioning.typ == VersioningURI && version != "" {
+			prefix = a.versionedPrefix(c.Prefix, version)
+		}
+		method := strings.ToUpper(strings.TrimSpace(e.Method))
+		routePath := router.JoinPath(prefix, e.Path)
+		if routePath == "" {
+			routePath = "/"
+		} else if !strings.HasPrefix(routePath, "/") {
+			routePath = "/" + routePath
+		}
+
+		dispatch := a.versioning.enabled &&
+			(a.versioning.typ == VersioningHeader || a.versioning.typ == VersioningMediaType) &&
+			version != ""
+		if dispatch {
+			key := method + " " + routePath
+			d := a.versionDispatcher(key)
+			mw := append(append([]router.Middleware(nil), c.Middleware...), e.Middleware...)
+			d.add(version, Chain(mw...)(e.Handler))
+			info.Routes = append(info.Routes, method+" "+routePath)
+			if !d.registered {
+				a.routes = append(a.routes, routeRegistration{Method: method, Path: routePath, Module: module})
+				a.recordDocs(ControllerDef{Prefix: prefix, Tags: c.Tags, Security: c.Security, Endpoints: []Endpoint{e}})
+				g := a.Router.Group(prefix, a.filterMiddleware())
+				g.Handle(e.Method, e.Path, d.handle)
+				d.registered = true
+			}
+			continue
+		}
+
+		info.Routes = append(info.Routes, method+" "+routePath)
+		a.routes = append(a.routes, routeRegistration{Method: method, Path: routePath, Module: module})
+		a.recordDocs(ControllerDef{Prefix: prefix, Tags: c.Tags, Security: c.Security, Endpoints: []Endpoint{e}})
+		g := a.Router.Group(prefix, append([]router.Middleware{a.filterMiddleware()}, c.Middleware...)...)
 		g.Handle(e.Method, e.Path, e.Handler, e.Middleware...)
 	}
-	doc := c
-	doc.Prefix = prefix
-	a.recordDocs(doc)
+	a.moduleControllers[module] = append(a.moduleControllers[module], info)
 }
 
 // New builds an App with sane defaults and the given options.

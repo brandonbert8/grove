@@ -53,6 +53,11 @@ func WithGuards(guards ...CanActivate) EndpointOption {
 	}
 }
 
+// WithVersion overrides the controller/app API version for this route.
+func WithVersion(v string) EndpointOption {
+	return func(e *Endpoint) { e.Version = v }
+}
+
 // WithSummary sets the short operation title for docs
 // (the @ApiOperation summary equivalent).
 func WithSummary(s string) EndpointOption {

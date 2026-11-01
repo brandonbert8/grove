@@ -136,9 +136,13 @@ func ProvideRequestNamed(name string, build func(c *di.Container, ctx context.Co
 // openapi package, and never affect routing. Query, Responses, and
 // Security are the @ApiQuery/@ApiResponse/@ApiBearerAuth equivalent.
 type Endpoint struct {
-	Method     string
-	Path       string
-	Handler    router.HandlerFunc
+	Method  string
+	Path    string
+	Handler router.HandlerFunc
+	// Version overrides the controller/app version for this endpoint
+	// (NestJS @Version). Empty uses ControllerDef.Version, then the
+	// app default.
+	Version    string
 	Middleware []router.Middleware
 	// Summary is a short operation title for docs.
 	Summary string
@@ -235,6 +239,9 @@ func PATCH(path string, h router.HandlerFunc, opts ...any) Endpoint {
 type ControllerDef struct {
 	// Prefix scopes every endpoint (e.g. "/users").
 	Prefix string
+	// Version applies to every endpoint without its own Version
+	// (NestJS @Controller({version})). Empty uses the app default.
+	Version string
 	// Middleware runs for every endpoint in the controller.
 	Middleware []router.Middleware
 	// Endpoints is the route table.

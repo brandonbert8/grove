@@ -416,6 +416,15 @@ type Statuser interface {
 	StatusCode() int
 }
 
+// ErrorResponse is the stable JSON envelope for handler and
+// infrastructure errors. Code and Details are omitted when empty.
+type ErrorResponse struct {
+	Error   string `json:"error"`
+	Status  int    `json:"status"`
+	Code    string `json:"code,omitempty"`
+	Details any    `json:"details,omitempty"`
+}
+
 func writeHandlerError(ctx Context, err error) {
 	status := http.StatusInternalServerError
 	var se Statuser
@@ -430,12 +439,15 @@ func writeHandlerError(ctx Context, err error) {
 		// their programmer-set messages.
 		msg = "internal server error"
 	}
-	body := map[string]any{"error": msg, "status": status}
+	body := ErrorResponse{Error: msg, Status: status}
 	// Preserve machine-readable context (e.g. pipes validation
 	// failures carried by *grove.HttpError.Details) so clients can
 	// render field errors without parsing messages.
 	if d, ok := detaill(err); ok {
-		body["details"] = d
+		body.Details = d
+	}
+	if code, ok := codeOf(err); ok {
+		body.Code = code
 	}
 	// Best effort: if headers were already sent this is a no-op write.
 	_ = ctx.JSON(status, body)
@@ -458,12 +470,28 @@ func detaill(err error) (any, bool) {
 	return nil, false
 }
 
+// codeOf unwraps err to an optional stable machine-readable code. The
+// contract is structural (same rationale as detaill): any Statuser with
+// ErrorCode provides it. See grove.HttpError.ErrorCode.
+func codeOf(err error) (string, bool) {
+	var ce interface {
+		Statuser
+		ErrorCode() string
+	}
+	if errors.As(err, &ce) {
+		if c := ce.ErrorCode(); c != "" {
+			return c, true
+		}
+	}
+	return "", false
+}
+
 // writeJSONError renders infrastructure errors (404/405) in the same
 // Grove JSON shape as handler errors.
 func writeJSONError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": msg, "status": status})
+	_ = json.NewEncoder(w).Encode(ErrorResponse{Error: msg, Status: status})
 }
 
 // applyMiddleware composes mw around h (last registered runs innermost).
