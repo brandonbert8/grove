@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -397,6 +398,14 @@ func (r *DefaultRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	root.mu.RLock()
 	global := append([]Middleware(nil), root.middlewares...)
 	root.mu.RUnlock()
+	// Seed a route context before Chi runs so the matched pattern remains
+	// observable from the original request after Chi returns. Chi normally
+	// attaches a fresh context internally, which the outer middleware cannot
+	// see once the request has been cloned.
+	if chi.RouteContext(req.Context()) == nil {
+		rctx := chi.NewRouteContext()
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	}
 	ctx := NewContext(w, req)
 	final := applyMiddleware(func(c Context) error {
 		root.mux.ServeHTTP(c.ResponseWriter(), c.Request())

@@ -20,7 +20,7 @@ var (
 // Too Large instead of a generic 400 Bad Request.
 type bodyTooLargeError struct{}
 
-func (bodyTooLargeError) Error() string { return "request body too large" }
+func (bodyTooLargeError) Error() string   { return "request body too large" }
 func (bodyTooLargeError) StatusCode() int { return http.StatusRequestEntityTooLarge }
 
 // limitedReader wraps a request body and fails with bodyTooLargeError
@@ -140,6 +140,20 @@ func (c *httpContext) Param(name string) string {
 		return v
 	}
 	return c.r.PathValue(name)
+}
+
+// RoutePattern returns the matched route pattern for c (for example
+// "/users/{id}"), or "" when the request did not match a registered route.
+// Middleware should read it after calling next so Chi has completed matching.
+func RoutePattern(c Context) string {
+	if c == nil || c.Request() == nil {
+		return ""
+	}
+	rc := chi.RouteContext(c.Request().Context())
+	if rc == nil {
+		return ""
+	}
+	return rc.RoutePattern()
 }
 
 // Query returns the first value of query parameter name.
