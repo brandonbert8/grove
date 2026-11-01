@@ -37,6 +37,9 @@ type App struct {
 	// modules pulled in through Imports (depth-first registration order).
 	// App.ModuleGraph and App.Validate read it.
 	moduleDefs []*ModuleDef
+	// lifecycle holds module-scoped hooks in depth-first registration
+	// order. Imports run before importers; shutdown reverses the list.
+	lifecycle []moduleLifecycle
 	// moduleControllers groups mounted ControllerDefs by module name for
 	// graph/diagnostics output (BuildControllers results included).
 	moduleControllers map[string][]ControllerInfo
@@ -354,6 +357,11 @@ func (a *App) Register(mods ...Module) error {
 		if err := m.Register(a); err != nil {
 			return err
 		}
+		if _, ok := m.(moduleDefAdapter); !ok {
+			if h := hooksFrom(m); !h.empty() {
+				a.lifecycle = append(a.lifecycle, moduleLifecycle{name: m.Name(), hooks: h})
+			}
+		}
 		a.modules = append(a.modules, m)
 		a.Logger.Info("module registered", "module", m.Name())
 	}
@@ -423,10 +431,11 @@ func (a *App) VerifyExports() error {
 	return nil
 }
 
-// OnStart registers hooks that run in order before Run starts
-// listening — the Go equivalent of NestJS OnModuleInit /
-// OnApplicationBootstrap (open pools, start crons, warm caches).
-// A hook failure aborts startup and Run returns the error.
+// OnStart registers app-wide hooks that run in order before Run starts
+// listening (open shared pools, start crons, warm caches). For resources
+// owned by one module prefer ModuleContext.OnModuleInit /
+// OnApplicationBootstrap: those run in dependency order. A hook failure
+// aborts startup and Run returns the error.
 func (a *App) OnStart(fns ...StartFunc) {
 	for _, fn := range fns {
 		if fn != nil {
@@ -435,10 +444,11 @@ func (a *App) OnStart(fns ...StartFunc) {
 	}
 }
 
-// OnStop registers hooks that run in reverse order during shutdown —
-// the equivalent of NestJS OnApplicationShutdown / enableShutdownHooks
-// (close pools, flush queues). Hooks run after the HTTP drain, so
-// in-flight handlers still have their resources while draining.
+// OnStop registers app-wide hooks that run in reverse order during
+// shutdown (close shared pools, flush queues). Module-owned resources should use
+// ModuleContext.OnModuleDestroy / OnApplicationShutdown. App hooks run
+// after module hooks and the HTTP drain, so in-flight handlers still
+// have their resources while draining.
 func (a *App) OnStop(fns ...StopFunc) {
 	for _, fn := range fns {
 		if fn != nil {

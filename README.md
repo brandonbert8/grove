@@ -40,7 +40,8 @@ _Composition over magic · compile-time over reflection · clear boundaries from
 | `@ApiOperation` + Swagger | `WithSummary/Tags/Responses/Security` options + `openapi.WithBody[DTO]()` / `WithResponse[DTO]()` + `openapi.Mount` (+ `openapi.Lint`) |
 | Passport JWT | `auth.Service` + `AuthGuard` + `RequireRole` |
 | `bcrypt` | `auth.HashPassword` / `ComparePassword` |
-| `OnModuleInit` / `OnShutdown` | `app.OnStart` / `app.OnStop` |
+| `OnModuleInit` / `OnModuleDestroy` | `ModuleContext.OnModuleInit` / `OnModuleDestroy` (or `RegisterLifecycle`) |
+| `OnApplicationBootstrap` / `OnApplicationShutdown` | `ModuleContext.OnApplicationBootstrap` / `OnApplicationShutdown` |
 | Terminus | `HealthModule` / `HealthModuleWithChecks` |
 | Testing module | `grovtest.TestingModule(t, Mod, Override[S](mock))` (`RequireBody[T]`, `RequireStatus`, `RequireValidationError`) |
 | `HttpException` | `HttpError` (+ machine-readable `details`) |
@@ -318,12 +319,31 @@ log.Println(config.Redacted(cfg)) // DATABASE_URL=[REDACTED]
 `lower`, `aliases`, comma-separated slices, `time.Duration`, and
 `Validate() error` on the target type.
 
-Plus lifecycle hooks for the real world:
+Plus lifecycle hooks for the real world. App-level hooks stay global:
 
 ```go
-app.OnStart(pool.Connect)  // abort boot on error — OnModuleInit
-app.OnStop(pool.Close)     // reversed, after HTTP drain — OnShutdown
+app.OnStart(pool.Connect)  // abort boot on error
+app.OnStop(pool.Close)     // reversed, after HTTP drain
 ```
+
+Module hooks run in dependency order and keep resources local:
+
+```go
+db := &grove.ModuleDef{
+    Name: "db",
+    Build: func(m *grove.ModuleContext) error {
+        m.OnModuleInit(func(ctx context.Context) error { return pool.Connect(ctx) })
+        m.OnModuleDestroy(func(ctx context.Context) error { return pool.Close() })
+        return nil
+    },
+}
+app.MustRegister(db.AsModule())
+```
+
+`OnModuleInit` / `OnApplicationBootstrap` run imports-first; `OnModuleDestroy`
+/ `OnApplicationShutdown` run in reverse. Errors are aggregated per phase, and
+`m.RegisterLifecycle(provider)` adapts a service that implements the NestJS
+interfaces directly.
 
 ## 🖥️ CLI
 

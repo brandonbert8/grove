@@ -158,10 +158,15 @@ Rules:
 
 Grove copies NestJS developer experience, never its runtime magic:
 
-- **Lifecycle hooks.** `app.OnStart` (validate before listen: pools,
-  crons, caches — `OnModuleInit`) and `app.OnStop` reversed best-effort
-  (`OnApplicationShutdown`). Shutdown drains HTTP first so in-flight
-  handlers keep their resources, then releases them. `Run` also sets
+- **Lifecycle hooks.** App-level `app.OnStart` / `app.OnStop` remain
+  global. Module-scoped hooks are explicit and deterministic:
+  `ModuleContext.OnModuleInit` / `OnApplicationBootstrap` run
+  imports-first at startup; `OnModuleDestroy` / `OnApplicationShutdown`
+  run in reverse at shutdown. `RegisterLifecycle(provider)` adapts a
+  service implementing the NestJS-style interfaces. Startup failures
+  aggregate every module error, then run destroy hooks and app OnStop
+  before returning. Shutdown drains HTTP first so in-flight handlers
+  keep their resources, then releases them. `Run` also sets
   Slowloris-safe header/read/write timeouts; `WithShutdownTimeout`
   bounds the whole sequence.
 - **Health.** `grove.HealthModule("")` mounts `GET /healthz` like any

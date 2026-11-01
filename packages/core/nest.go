@@ -322,6 +322,21 @@ type ModuleDef struct {
 	// registered. It receives the module-scoped context, so grove.Inject
 	// and grove.Wire honor Exports/Imports when the module is isolated.
 	Build func(m *ModuleContext) error
+	// Hooks runs module-scoped lifecycle callbacks. Build may append
+	// more through ModuleContext.OnModuleInit and friends; all hooks are
+	// snapshotted when the module finishes registering.
+	Hooks ModuleHooks
+}
+
+// ModuleHooks holds the NestJS lifecycle callbacks for one module.
+// Init and Bootstrap run in registration order; Destroy and Shutdown run
+// in reverse registration order. Hooks within one phase run in the
+// order they were added; destroy/shutdown hooks run in reverse.
+type ModuleHooks struct {
+	Init      []func(context.Context) error
+	Bootstrap []func(context.Context) error
+	Destroy   []func(context.Context) error
+	Shutdown  []func(context.Context) error
 }
 
 // DynamicModule builds a configured module instance
@@ -458,6 +473,9 @@ func (m *ModuleDef) Register(app *App) error {
 		if err := m.Build(scope); err != nil {
 			return fmt.Errorf("grove: module %q build: %w", m.displayName(), err)
 		}
+	}
+	if h := cloneModuleHooks(m.Hooks); !h.empty() {
+		app.lifecycle = append(app.lifecycle, moduleLifecycle{name: m.displayName(), hooks: h})
 	}
 	app.moduleDefs = append(app.moduleDefs, m)
 	scopeRegistered = true

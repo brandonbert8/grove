@@ -2,6 +2,7 @@ package grove
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -66,6 +67,10 @@ func (a *App) RunWith(o ServerOptions) error {
 			return fmt.Errorf("grove: start hook %d failed: %w", i, err)
 		}
 	}
+	if err := a.startModules(timeout); err != nil {
+		a.cleanupModules(timeout)
+		return fmt.Errorf("grove: module startup failed: %w", err)
+	}
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -107,11 +112,9 @@ func (a *App) RunWith(o ServerOptions) error {
 		}()
 	case err := <-stopped:
 		// The server exited on its own (failure or external close):
-		// nothing left to drain, but stop hooks still release resources.
-		stopCtx, cancel := context.WithTimeout(context.Background(), timeout)
-		a.stop(stopCtx)
-		cancel()
-		return err
+		// nothing left to drain, but lifecycle hooks still release
+		// resources.
+		return errors.Join(err, a.stopModules(timeout))
 	}
 
 	if err := a.shutdown(srv, timeout); err != nil {
@@ -129,22 +132,63 @@ func withDefault(v, d time.Duration) time.Duration {
 	return v
 }
 
-// shutdown drains the HTTP server first, then runs OnStop hooks —
-// in that order. In-flight handlers keep their pools and queues while
-// draining; hooks release them after. Each phase gets a fresh timeout
-// so a slow drain cannot starve pool/queue closers. A failed drain
-// still runs the hooks before reporting the error.
+// shutdown drains the HTTP server first, then runs module destroy /
+// shutdown hooks and app OnStop hooks, in that order. In-flight handlers
+// keep their pools and queues while draining; hooks release them after.
+// Each phase gets a fresh timeout so a slow drain cannot starve closers.
+// A failed drain still runs the hooks before reporting the error.
 func (a *App) shutdown(srv *http.Server, timeout time.Duration) error {
 	drainCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	drainErr := srv.Shutdown(drainCtx)
 	cancel()
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), timeout)
-	defer stopCancel()
-	a.stop(stopCtx)
+	moduleErr := a.stopModules(timeout)
 	if drainErr != nil {
-		return fmt.Errorf("grove: graceful shutdown failed: %w", drainErr)
+		drainErr = fmt.Errorf("grove: graceful shutdown failed: %w", drainErr)
 	}
-	return nil
+	return errors.Join(drainErr, moduleErr)
+}
+
+// startModules runs OnModuleInit then OnApplicationBootstrap with a
+// fresh timeout per phase.
+func (a *App) startModules(timeout time.Duration) error {
+	initCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	err := a.initModules(initCtx)
+	cancel()
+	if err != nil {
+		return err
+	}
+	bootstrapCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return a.bootstrapModules(bootstrapCtx)
+}
+
+// stopModules runs module destroy/shutdown hooks in reverse registration
+// order, then app OnStop hooks. Each phase gets a fresh timeout.
+func (a *App) stopModules(timeout time.Duration) error {
+	destroyCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	err := a.destroyModules(destroyCtx)
+	cancel()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	err = errors.Join(err, a.shutdownModules(shutdownCtx))
+	cancel()
+	stopCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	a.stop(stopCtx)
+	cancel()
+	return err
+}
+
+// cleanupModules releases resources after a failed module startup. All
+// app OnStart hooks already succeeded, so their OnStop counterparts run
+// too; destroy hooks must tolerate a partially initialized module.
+func (a *App) cleanupModules(timeout time.Duration) {
+	destroyCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	if err := a.destroyModules(destroyCtx); err != nil {
+		a.Logger.Error("module cleanup failed", "error", err.Error())
+	}
+	cancel()
+	stopCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	a.stop(stopCtx)
+	cancel()
 }
 
 // stop runs OnStop hooks in reverse order, best-effort: every hook runs
