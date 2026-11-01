@@ -53,11 +53,12 @@ interfaces plus composition.
 | Package | Owns | Must NOT import |
 |---|---|---|
 | `core` (`packages/core`) | `App`, `Module`, `ModuleDef` + `ControllerDef` + `Endpoint` (+docs metadata), `ModuleContext` isolation, validation/graph, API versioning (URI/header/media type), `HttpError` (+code/details/cause), guards/interceptors (`CanActivate`, `UseGuard`, `Chain`), lifecycle (`Run`/`Listen`, `OnStart`/`OnStop`, `HealthModule`, `Docs`), declarative handlers (`HandleBody`, `Controllers`), `ExceptionFilter` | `middleware`, `pipes`, `auth`, `cli` (leaf `httperr` + `validate` allowed) |
-| `router` (`packages/router`) | `Router` interface, `Context` (+`Body` binding), Chi-backed `DefaultRouter`, `Statuser` + `ErrorResponse` mapping, `FromHTTP` std adapter | `core`, `di`, `config` |
+| `router` (`packages/router`) | `Router` interface, `Context` (+`Body` binding), `RoutePattern` matched-pattern introspection, Chi-backed `DefaultRouter`, `Statuser` + `ErrorResponse` mapping, `FromHTTP` std adapter | `core`, `di`, `config` |
 | `di` (`packages/di`) | `Container`, singleton/transient/lazy-singleton lifetimes, generic helpers, exported `KeyFor` | any sibling package |
 | `config` (`packages/config`) | Typed `Config`, `LoadAs[T]` struct-tag decoding, redaction, `.env` parsing, env precedence | any sibling package |
 | `logger` (`packages/logger`) | `Logger` interface, `slog` backend | any sibling package |
 | `middleware` (`packages/middleware`) | Recovery (+stack), Logging (+request_id, streaming-safe), CORS (+expose), RequestID, Timeout (JSON 503), SecureHeaders, RateLimit (honest Retry-After, proxy-aware) over `router` | `core` |
+| `metrics` (`packages/metrics`) | Dependency-free registry, HTTP middleware (counts, in-flight gauge, duration histogram, bounded route labels), Prometheus text exposition | `core` |
 | `cli` (`packages/cli`) | cobra tree (`new`, `generate`, `version`, `lint`, `wire`, `graph`, `doctor`, `build`, `start`, `test`, `dev`), module-graph AST scanner, generators returning `FileChange` events, `ui` design system (theme, no-color, verbose), ldflags/buildinfo versioning | `core` internals beyond templates |
 | `pipes` (`packages/pipes`) | Tag validation engine (`required,min,max,len,gte,lte,email,uuid,url,oneof` + `RegisterRule` + `ValidateStrict`), `ValidateBody`, `BindQuery` (strict), `BindHeader`, `BindPath`, `Page`, typed `Parse`/`Path`/`Query` | `router`, `core` (HttpError only) |
 | `auth` (`packages/auth`) | HS256 JWT + bcrypt passwords, access/refresh pairs with rotation, `AuthGuard`, `RequireRole`/`RequireAnyRole` | `router`, `core` (HttpError, guards only) |
@@ -65,7 +66,7 @@ interfaces plus composition.
 | `openapi` (`packages/openapi`) | OpenAPI 3.1 from `App.Docs` (+`Mount`) | `router`, `core` (App only) |
 
 Dependency direction: bottom layer `{router, di, config, logger}` ←
-`core` ← `{middleware, pipes, auth, grovtest, openapi}`; `cli` is
+`core` ← `{middleware, metrics, pipes, auth, grovtest, openapi}`; `cli` is
 standalone (templates only); `examples/*` compose everything. `core` never imports upward, so there are
 no cycles.
 
@@ -173,6 +174,14 @@ Grove copies NestJS developer experience, never its runtime magic:
   module — no special server path. `HealthModuleWithChecks` adds
   Terminus-style indicators with 200/503 semantics and a per-check
   timeout.
+- **Metrics.** `packages/metrics` provides a dependency-free registry
+  with Prometheus text exposition. `reg.Middleware()` records
+  `http_requests_total`, `http_requests_in_flight`, and
+  `http_request_duration_seconds`, labelled by method, matched route
+  pattern, and status. `router.RoutePattern` exposes the Chi-matched
+  pattern after dispatch, so dynamic paths collapse to
+  `/users/{id}` instead of unbounded raw URLs. `reg.HandlerFunc()`
+  serves the scrape endpoint through the normal router.
 - **Docs as data.** `grove.WithSummary/WithDescription/WithTags/
   WithQuery/WithResponses/WithSecurity` options on `GET/POST/...` (the
   `@ApiOperation`/`@ApiQuery`/`@ApiResponse`/`@ApiBearerAuth`

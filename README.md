@@ -43,6 +43,7 @@ _Composition over magic · compile-time over reflection · clear boundaries from
 | `OnModuleInit` / `OnModuleDestroy` | `ModuleContext.OnModuleInit` / `OnModuleDestroy` (or `RegisterLifecycle`) |
 | `OnApplicationBootstrap` / `OnApplicationShutdown` | `ModuleContext.OnApplicationBootstrap` / `OnApplicationShutdown` |
 | Terminus | `HealthModule` / `HealthModuleWithChecks` |
+| Micrometer / Actuator metrics | `metrics.New()` + `reg.Middleware()` + `reg.HandlerFunc()` |
 | Testing module | `grovtest.TestingModule(t, Mod, Override[S](mock))` (`RequireBody[T]`, `RequireStatus`, `RequireValidationError`) |
 | `HttpException` | `HttpError` (+ machine-readable `details`) |
 | `nest generate` | `grove generate` (`module\|controller\|service\|resource\|guard\|pipe\|filter\|interceptor`) |
@@ -242,6 +243,17 @@ Production-ready middleware, all `net/http`-friendly and streaming-safe:
 | `SecureHeaders` | `nosniff`, `DENY`, `no-referrer`, TLS-only HSTS |
 | `RateLimit` | Per-IP token bucket → JSON 429 + honest `Retry-After` |
 
+Metrics are dependency-free and Prometheus-compatible. The middleware
+records request counts, in-flight requests, and a duration histogram
+labelled by method, matched route pattern, and status; route labels use
+patterns (`/users/{id}`) so cardinality stays bounded:
+
+```go
+reg := metrics.New(metrics.WithBuckets([]float64{0.01, 0.05, 0.1, 0.5, 1}))
+app.Router.Use(reg.Middleware())
+app.Route("GET", "/metrics", reg.HandlerFunc())
+```
+
 Auth without Passport-phobia:
 
 ```go
@@ -428,6 +440,7 @@ grove/
 │   ├── config/           # Typed Config, .env + environment loading
 │   ├── logger/           # Logger interface + slog backend
 │   ├── middleware/       # Recovery, Logging, CORS, RequestID, Timeout, SecureHeaders, RateLimit
+│   ├── metrics/          # Prometheus-compatible HTTP metrics (registry, middleware, exposition)
 │   ├── pipes/            # Validation engine, Body/Query/Header/Path binding, Page, strict mode
 │   ├── auth/             # JWT pairs + rotation, bcrypt, AuthGuard, RequireRole/AnyRole
 │   ├── grovtest/         # HTTP test harness (JSON client, Decode, RequireStatus)
@@ -440,8 +453,8 @@ grove/
 
 Package rules: `core` composes the leaf packages; leaves never import
 `core` or each other (except `middleware` → `router, logger`;
-`pipes`/`auth` → `router, core` for HttpError). No cycles, no global
-mutable state.
+`metrics` → `router`; `pipes`/`auth` → `router, core` for HttpError).
+No cycles, no global mutable state.
 
 HTTP engine: `Grove → Chi → net/http`. Chi
 (`github.com/go-chi/chi/v5`) is the internal router — matching, path
@@ -468,6 +481,10 @@ lazy `Status()`, strict `BindQuery`, streaming-safe logging,
 stack-trace recovery, honest `Retry-After`, drain-before-stop,
 bcrypt + refresh rotation, required/strict config, self-wiring
 `generate`, lazy OpenAPI with query/responses/bearer docs, and CI.
+
+**Observability (done)** — dependency-free Prometheus metrics registry,
+HTTP middleware with bounded-cardinality route labels, in-flight gauge,
+duration histogram, and a text exposition handler.
 
 **v1** — runtime-only DI (`Singleton`/`Transient` + request-scoped
 `ProvideRequest`/`InjectRequest` via `grove.RequestScope`, NestJS
