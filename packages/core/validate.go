@@ -26,8 +26,9 @@ func (e *ValidationError) Error() string {
 // working, and the checks catch wiring mistakes before requests.
 //
 // Checks: duplicate module names, import cycles, imports that were
-// never built, duplicate provider keys, unknown exports, and duplicate
-// METHOD+PATH routes. Raw Router use is invisible by design.
+// never built, duplicate provider keys, unknown exports, invalid
+// module re-exports, and duplicate METHOD+PATH routes. Raw Router use
+// is invisible by design.
 //
 // Enable it at startup with ValidateOnStart / WithValidation, or call it
 // from a test (grovtest) and CI.
@@ -156,7 +157,9 @@ func (a *App) providerProblems() []string {
 	return problems
 }
 
-// exportProblems reports ModuleDef.Exports that name no known provider.
+// exportProblems reports ModuleDef.Exports that name no known provider
+// and ExportModules entries that are nil, self-referential, unimported,
+// or unbuilt.
 func (a *App) exportProblems() []string {
 	var problems []string
 	for _, m := range a.moduleDefs {
@@ -170,6 +173,29 @@ func (a *App) exportProblems() []string {
 			}
 			if !a.Container.Has(e) {
 				problems = append(problems, fmt.Sprintf("module %q exports unknown provider %q (did you add grove.Provide for it?)", m.displayName(), e))
+			}
+		}
+		for _, re := range m.ExportModules {
+			if re == nil {
+				problems = append(problems, fmt.Sprintf("module %q re-exports a nil module", m.displayName()))
+				continue
+			}
+			if re == m {
+				problems = append(problems, fmt.Sprintf("module %q re-exports itself", m.displayName()))
+				continue
+			}
+			imported := false
+			for _, imp := range m.Imports {
+				if imp == re {
+					imported = true
+					break
+				}
+			}
+			if !imported {
+				problems = append(problems, fmt.Sprintf("module %q re-exports %q but does not import it", m.displayName(), re.displayName()))
+			}
+			if a.builtModules == nil || !a.builtModules[re] {
+				problems = append(problems, fmt.Sprintf("module %q re-exports %q, which was not built", m.displayName(), re.displayName()))
 			}
 		}
 	}

@@ -297,6 +297,11 @@ type ModuleDef struct {
 	// (non-isolated) modules empty means all providers are public
 	// (v0.2 compat). Isolated modules export only explicit entries.
 	Exports []string
+	// ExportModules re-exports everything exported by the listed
+	// modules (NestJS `exports: [SomeModule]`). Each entry must also
+	// appear in Imports. Use it to build shared/barrel modules without
+	// forcing consumers to import every leaf module.
+	ExportModules []*ModuleDef
 	// Global makes providers visible without importing (@Global).
 	Global bool
 	// Isolated opts this module into per-module provider visibility
@@ -428,6 +433,29 @@ func (m *ModuleDef) Register(app *App) error {
 		if s := app.moduleScopes[imp]; s != nil {
 			scope.imports = append(scope.imports, s)
 		}
+	}
+	for _, re := range m.ExportModules {
+		if re == nil {
+			continue
+		}
+		if re == m {
+			return fmt.Errorf("grove: module %q cannot re-export itself", m.displayName())
+		}
+		imported := false
+		for _, imp := range m.Imports {
+			if imp == re {
+				imported = true
+				break
+			}
+		}
+		if !imported {
+			return fmt.Errorf("grove: module %q re-exports %q but does not import it", m.displayName(), re.displayName())
+		}
+		reScope := app.moduleScopes[re]
+		if reScope == nil {
+			return fmt.Errorf("grove: module %q re-exports %q, which was not built", m.displayName(), re.displayName())
+		}
+		scope.reexports = append(scope.reexports, reScope)
 	}
 	app.moduleScopes[m] = scope
 	globalAdded := false

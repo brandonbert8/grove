@@ -221,3 +221,110 @@ func TestModuleContextProvide(t *testing.T) {
 		t.Fatalf("resolved %+v, want dynamic", v)
 	}
 }
+
+func TestModuleReExportsImportedProvider(t *testing.T) {
+	app := New()
+	app.EnableModuleIsolation()
+
+	db := &ModuleDef{
+		Name:      "db",
+		Providers: []Provider{isoProvider("db")},
+		Exports:   []string{di.KeyFor[isoService]()},
+	}
+	shared := &ModuleDef{
+		Name:          "shared",
+		Imports:       []*ModuleDef{db},
+		ExportModules: []*ModuleDef{db},
+	}
+	var got string
+	users := &ModuleDef{
+		Name:    "users",
+		Imports: []*ModuleDef{shared},
+		Build: func(m *ModuleContext) error {
+			svc, err := Inject[isoService](m)
+			if err != nil {
+				return err
+			}
+			got = svc.name
+			return nil
+		},
+	}
+	if err := app.Register(users.AsModule()); err != nil {
+		t.Fatal(err)
+	}
+	if got != "db" {
+		t.Fatalf("resolved %q, want db", got)
+	}
+	graph := app.ModuleGraph()
+	for _, info := range graph {
+		if info.Name == "shared" {
+			if len(info.ExportModules) != 1 || info.ExportModules[0] != "db" {
+				t.Fatalf("shared ExportModules = %v, want [db]", info.ExportModules)
+			}
+			return
+		}
+	}
+	t.Fatal("shared module missing from graph")
+}
+
+func TestModuleWithoutReExportKeepsProviderHidden(t *testing.T) {
+	app := New()
+	app.EnableModuleIsolation()
+
+	db := &ModuleDef{
+		Name:      "db",
+		Providers: []Provider{isoProvider("db")},
+		Exports:   []string{di.KeyFor[isoService]()},
+	}
+	shared := &ModuleDef{
+		Name:    "shared",
+		Imports: []*ModuleDef{db},
+	}
+	users := &ModuleDef{
+		Name:    "users",
+		Imports: []*ModuleDef{shared},
+		Build: func(m *ModuleContext) error {
+			_, err := Inject[isoService](m)
+			return err
+		},
+	}
+	err := app.Register(users.AsModule())
+	if err == nil || !strings.Contains(err.Error(), "cannot resolve provider") {
+		t.Fatalf("Register() = %v, want visibility error", err)
+	}
+}
+
+func TestModuleReExportRequiresImport(t *testing.T) {
+	app := New()
+	db := &ModuleDef{Name: "db"}
+	barrel := &ModuleDef{Name: "barrel", ExportModules: []*ModuleDef{db}}
+
+	if err := app.Register(db.AsModule()); err != nil {
+		t.Fatal(err)
+	}
+	err := app.Register(barrel.AsModule())
+	if err == nil || !strings.Contains(err.Error(), "does not import it") {
+		t.Fatalf("Register() = %v, want missing import error", err)
+	}
+}
+
+func TestModuleCannotReExportItself(t *testing.T) {
+	app := New()
+	m := &ModuleDef{Name: "self"}
+	m.ExportModules = []*ModuleDef{m}
+
+	err := app.Register(m.AsModule())
+	if err == nil || !strings.Contains(err.Error(), "cannot re-export itself") {
+		t.Fatalf("Register() = %v, want self re-export error", err)
+	}
+}
+
+func TestValidateRejectsNilReExport(t *testing.T) {
+	app := New()
+	app.MustRegister((&ModuleDef{Name: "barrel", ExportModules: []*ModuleDef{nil}}).AsModule())
+
+	err := app.Validate()
+	if err == nil || !strings.Contains(err.Error(), "re-exports a nil module") {
+		t.Fatalf("Validate() = %v, want nil re-export error", err)
+	}
+}

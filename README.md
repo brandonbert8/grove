@@ -31,6 +31,7 @@ _Composition over magic · compile-time over reflection · clear boundaries from
 | NestJS | Grove |
 |---|---|
 | `@Module()` | `ModuleDef` + `AsModule()` |
+| `exports: [Service, Module]` | `Exports` (providers) / `ExportModules` (re-export imports) |
 | `@Controller()` / `@Get()` | `XxxController` + `ControllerDef` + `grove.GET()` with `WithSummary()` options |
 | `@Injectable()` + constructor DI | `Provide` / `Provide0` + `grove.Inject[T]` / `grove.Wire(app, NewXxxController)` |
 | `@UseGuards()` / `APP_GUARD` | `UseGuard()` / per-controller `Middleware` / `app.UseGuards()` |
@@ -170,6 +171,18 @@ app.MustRegister(users.AsModule())
 `grove.Wire` enforce visibility when the module is isolated. Legacy
 modules keep app-wide provider visibility; isolated modules resolve only
 their own providers, imported `Exports`, and `@Global` exports.
+
+Shared/barrel modules can re-export an imported module (NestJS
+`exports: [SomeModule]`) so consumers import one module instead of every
+leaf:
+
+```go
+shared := &grove.ModuleDef{
+    Name:          "shared",
+    Imports:       []*grove.ModuleDef{db},
+    ExportModules: []*grove.ModuleDef{db},
+}
+```
 
 API versioning is declarative (NestJS `VersioningType`):
 

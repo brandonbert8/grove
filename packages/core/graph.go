@@ -38,6 +38,9 @@ type ModuleInfo struct {
 	Imports []string
 	// Exports lists provider keys the module makes public.
 	Exports []string
+	// ExportModules lists imported modules whose public providers are
+	// re-exported (NestJS `exports: [SomeModule]`).
+	ExportModules []string
 	// Providers lists the module's own DI registrations.
 	Providers []ProviderInfo
 	// Controllers lists mounted controllers and their routes.
@@ -86,6 +89,11 @@ func (a *App) moduleInfo(m *ModuleDef) ModuleInfo {
 	for _, imp := range m.Imports {
 		if imp != nil {
 			info.Imports = append(info.Imports, imp.displayName())
+		}
+	}
+	for _, re := range m.ExportModules {
+		if re != nil {
+			info.ExportModules = append(info.ExportModules, re.displayName())
 		}
 	}
 	for _, p := range m.Providers {

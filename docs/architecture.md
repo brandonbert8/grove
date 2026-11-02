@@ -133,6 +133,11 @@ Rules:
   actionable message when a provider is not visible. Legacy modules keep
   app-wide visibility (empty `Exports` = fully public); isolated modules
   export only explicit entries and cannot share provider keys.
+  `ModuleDef.ExportModules` re-exports an imported module's public
+  providers (NestJS `exports: [SomeModule]`), so a shared/barrel module
+  can expose a leaf without forcing every consumer to import it. The
+  re-export must appear in `Imports`; `Register` and `App.Validate`
+  reject missing, self, and unbuilt re-exports.
 - **Architecture rules are data.** `grove.arch.yaml` declares module
   import allow/deny lists and an optional cycle check; `grove doctor`
   enforces it against the source-level AST graph. The core runtime never

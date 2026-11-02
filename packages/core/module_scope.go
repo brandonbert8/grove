@@ -22,9 +22,10 @@ type ModuleContext struct {
 	// Module is the definition being built.
 	Module *ModuleDef
 
-	isolated bool
-	own      map[string]bool
-	imports  []*ModuleContext
+	isolated  bool
+	own       map[string]bool
+	imports   []*ModuleContext
+	reexports []*ModuleContext
 }
 
 // Isolated reports whether this module enforces provider visibility.
@@ -76,9 +77,15 @@ func (m *ModuleContext) exported(name string) bool {
 				return true
 			}
 		}
-		return false
+	} else if m.Module.Exported(name) {
+		return true
 	}
-	return m.Module.Exported(name)
+	for _, re := range m.reexports {
+		if re.exported(name) {
+			return true
+		}
+	}
+	return false
 }
 
 // Provide registers one provider inside the module during Build. Most
