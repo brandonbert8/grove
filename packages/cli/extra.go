@@ -116,8 +116,10 @@ func newBuildCommand(g *globalOpts) *cobra.Command {
 func newStartCommand(g *globalOpts) *cobra.Command {
 	var prod bool
 	cmd := &cobra.Command{
-		Use:   "start",
-		Short: "Run the application",
+		Use:     "start [-- app args...]",
+		Short:   "Run the application",
+		Args:    cobra.ArbitraryArgs,
+		Example: "  grove start\n  grove start --prod -- --port 8080",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := renderer(cmd, g)
 			cwd, err := os.Getwd()
@@ -128,8 +130,9 @@ func newStartCommand(g *globalOpts) *cobra.Command {
 				r.Muted("Starting in production mode (ENV=production)")
 				_ = os.Setenv("ENV", "production")
 			}
-			r.Muted("go run .")
-			if err := runGo(cmd, cwd, "run", "."); err != nil {
+			goArgs := append([]string{"run", "."}, args...)
+			r.Muted("go " + joinArgs(goArgs))
+			if err := runGo(cmd, cwd, goArgs...); err != nil {
 				return fail(r, 1, "Application exited with an error", err.Error(), "", err)
 			}
 			return nil
@@ -164,14 +167,16 @@ func newTestCommand(g *globalOpts) *cobra.Command {
 	}
 }
 
-// newDevCommand builds `grove dev`: restart on .go changes.
+// newDevCommand builds `grove dev`: restart on source/config changes.
 // The watcher is stdlib polling (mtime+size hash every interval): no
 // new dependencies, coherent with the stdlib-first rule.
 func newDevCommand(g *globalOpts) *cobra.Command {
 	var interval int
 	cmd := &cobra.Command{
-		Use:   "dev",
-		Short: "Run with restart on file changes",
+		Use:     "dev [-- app args...]",
+		Short:   "Run with restart on file changes",
+		Args:    cobra.ArbitraryArgs,
+		Example: "  grove dev\n  grove dev -- --port 8080",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := renderer(cmd, g)
 			cwd, err := os.Getwd()
@@ -181,8 +186,8 @@ func newDevCommand(g *globalOpts) *cobra.Command {
 			if interval <= 0 {
 				interval = 500
 			}
-			r.Muted("Watching .go files (poll every " + itoa(interval) + "ms, Ctrl+C to stop)...")
-			return watchRun(cmd.Context(), cwd, interval)
+			r.Muted("Watching source and config files (poll every " + itoa(interval) + "ms, Ctrl+C to stop)...")
+			return watchRun(cmd.Context(), cwd, interval, args)
 		},
 	}
 	cmd.Flags().IntVar(&interval, "interval", 500, "poll interval in milliseconds")

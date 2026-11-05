@@ -491,6 +491,10 @@ func ResolveScoped[T any](s *Scope) (T, error) {
 	return typed, nil
 }
 
+// keyCache memoizes derived keys by reflect.Type. Key derivation is pure
+// per type, so the reflection walk and string building only run once.
+var keyCache sync.Map // reflect.Type -> string
+
 // keyFor derives the default registration key for type T.
 // Pointer, slice, and other wrappers are unwound to the named element
 // type so *Service and Service share one stable, human-readable key.
@@ -498,6 +502,15 @@ func ResolveScoped[T any](s *Scope) (T, error) {
 // derivation so future code generation can substitute static keys.
 func keyFor[T any]() string {
 	t := reflect.TypeOf((*T)(nil)).Elem()
+	if key, ok := keyCache.Load(t); ok {
+		return key.(string)
+	}
+	key := deriveKey(t)
+	actual, _ := keyCache.LoadOrStore(t, key)
+	return actual.(string)
+}
+
+func deriveKey(t reflect.Type) string {
 	for {
 		switch t.Kind() {
 		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map, reflect.Chan:

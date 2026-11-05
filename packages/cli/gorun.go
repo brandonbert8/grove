@@ -32,23 +32,23 @@ func joinArgs(args []string) string { return strings.Join(args, " ") }
 
 func itoa(n int) string { return strconv.Itoa(n) }
 
-// watchRun runs `go run .` and restarts it whenever a .go file under dir
-// changes. Polling compares a mtime+size fingerprint: stdlib only, no
-// fsnotify dependency.
-func watchRun(ctx context.Context, dir string, intervalMs int) error {
+// watchRun runs `go run .` (plus app args) and restarts it whenever a
+// watched source/config file under dir changes. Polling compares a
+// mtime+size fingerprint: stdlib only, no fsnotify dependency.
+func watchRun(ctx context.Context, dir string, intervalMs int, appArgs []string) error {
 	if intervalMs <= 0 {
 		intervalMs = 500
 	}
 	ticker := time.NewTicker(time.Duration(intervalMs) * time.Millisecond)
 	defer ticker.Stop()
-	last, err := fingerprintGoFiles(dir)
+	last, err := fingerprintFiles(dir)
 	if err != nil {
 		return err
 	}
 	for {
 		child, cancel := context.WithCancel(ctx)
 		done := make(chan error, 1)
-		go func() { done <- runGoChild(child, dir) }()
+		go func() { done <- runGoChild(child, dir, appArgs) }()
 		restart := false
 	loop:
 		for {
@@ -66,7 +66,7 @@ func watchRun(ctx context.Context, dir string, intervalMs int) error {
 				}
 				break loop
 			case <-ticker.C:
-				cur, ferr := fingerprintGoFiles(dir)
+				cur, ferr := fingerprintFiles(dir)
 				if ferr != nil {
 					cancel()
 					<-done
@@ -89,7 +89,7 @@ func watchRun(ctx context.Context, dir string, intervalMs int) error {
 				case <-ctx.Done():
 					return nil
 				case <-ticker.C:
-					cur, ferr := fingerprintGoFiles(dir)
+					cur, ferr := fingerprintFiles(dir)
 					if ferr != nil {
 						return ferr
 					}
@@ -105,10 +105,11 @@ func watchRun(ctx context.Context, dir string, intervalMs int) error {
 	}
 }
 
-// runGoChild runs `go run .` attached to the terminal until it exits
-// or ctx is cancelled (the child is killed on cancellation).
-func runGoChild(ctx context.Context, dir string) error {
-	c := exec.CommandContext(ctx, "go", "run", ".")
+// runGoChild runs `go run .` (plus app args) attached to the terminal
+// until it exits or ctx is cancelled (the child is killed on cancellation).
+func runGoChild(ctx context.Context, dir string, appArgs []string) error {
+	args := append([]string{"run", "."}, appArgs...)
+	c := exec.CommandContext(ctx, "go", args...)
 	c.Dir = dir
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
@@ -117,9 +118,11 @@ func runGoChild(ctx context.Context, dir string) error {
 	return c.Run()
 }
 
-// fingerprintGoFiles hashes .go paths + mtime + size under dir,
-// skipping vendor/ and dot-directories.
-func fingerprintGoFiles(dir string) (string, error) {
+// fingerprintFiles hashes watched paths + mtime + size under dir,
+// skipping vendor/, dot-directories, generated output directories
+// (build/, dist/, ...), and _test.go files (test edits do not change the
+// app binary, so they should not restart the server).
+func fingerprintFiles(dir string) (string, error) {
 	h := sha256.New()
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -127,12 +130,12 @@ func fingerprintGoFiles(dir string) (string, error) {
 		}
 		name := d.Name()
 		if d.IsDir() {
-			if name == "vendor" || (strings.HasPrefix(name, ".") && path != dir) {
+			if skipGraphDir(name) || (strings.HasPrefix(name, ".") && path != dir) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !strings.HasSuffix(name, ".go") {
+		if !watchedFile(name) {
 			return nil
 		}
 		info, err := d.Info()
@@ -146,4 +149,27 @@ func fingerprintGoFiles(dir string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// watchedFile reports whether a file change should restart `grove dev`.
+func watchedFile(name string) bool {
+	if strings.HasSuffix(name, "_test.go") {
+		return false
+	}
+	switch {
+	case strings.HasSuffix(name, ".go"),
+		name == "go.mod",
+		name == "go.sum",
+		name == "go.work",
+		name == "go.work.sum",
+		strings.HasPrefix(name, ".env"),
+		strings.HasSuffix(name, ".yaml"),
+		strings.HasSuffix(name, ".yml"),
+		strings.HasSuffix(name, ".json"),
+		strings.HasSuffix(name, ".toml"),
+		strings.HasSuffix(name, ".ini"),
+		strings.HasSuffix(name, ".conf"):
+		return true
+	}
+	return false
 }

@@ -33,6 +33,9 @@ type DefaultRouter struct {
 	parent       *DefaultRouter
 	routes       []RouteInfo
 	errorHandler func(Context, error)
+	// serveHandler caches global middleware composed around the mux. It is
+	// nil until the first request and invalidated by root.Use.
+	serveHandler HandlerFunc
 	// strict panics on duplicate method+path instead of last-wins.
 	strict bool
 }
@@ -203,6 +206,9 @@ func (r *DefaultRouter) Use(mw ...Middleware) {
 	root.mu.Lock()
 	defer root.mu.Unlock()
 	r.middlewares = append(r.middlewares, mw...)
+	if r == root {
+		root.serveHandler = nil
+	}
 }
 
 // GET registers a GET handler for path.
@@ -395,9 +401,7 @@ func (r *DefaultRouter) Routes() []RouteInfo {
 // matched routes, 404s, 405s, and preflights alike.
 func (r *DefaultRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	root := r.rootRouter()
-	root.mu.RLock()
-	global := append([]Middleware(nil), root.middlewares...)
-	root.mu.RUnlock()
+	final := root.globalHandler()
 	// Seed a route context before Chi runs so the matched pattern remains
 	// observable from the original request after Chi returns. Chi normally
 	// attaches a fresh context internally, which the outer middleware cannot
@@ -407,12 +411,40 @@ func (r *DefaultRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	}
 	ctx := NewContext(w, req)
-	final := applyMiddleware(func(c Context) error {
-		root.mux.ServeHTTP(c.ResponseWriter(), c.Request())
-		return nil
-	}, global)
 	if err := final(ctx); err != nil {
 		r.dispatchError(ctx, err)
+	}
+}
+
+// globalHandler returns the cached global middleware chain, building it
+// outside the lock so middleware constructors can safely touch the router.
+// A concurrent Use bumps the middleware count, which discards the build.
+func (r *DefaultRouter) globalHandler() HandlerFunc {
+	for {
+		r.mu.RLock()
+		final := r.serveHandler
+		if final != nil {
+			r.mu.RUnlock()
+			return final
+		}
+		global := append([]Middleware(nil), r.middlewares...)
+		count := len(r.middlewares)
+		r.mu.RUnlock()
+
+		built := applyMiddleware(func(c Context) error {
+			r.mux.ServeHTTP(c.ResponseWriter(), c.Request())
+			return nil
+		}, global)
+
+		r.mu.Lock()
+		if r.serveHandler == nil && len(r.middlewares) == count {
+			r.serveHandler = built
+		}
+		final = r.serveHandler
+		r.mu.Unlock()
+		if final != nil {
+			return final
+		}
 	}
 }
 

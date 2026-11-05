@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -225,8 +226,17 @@ func parseDotEnvFile(path string) (map[string]string, error) {
 	}
 	defer f.Close()
 
+	out, err := parseDotEnv(f)
+	if err != nil {
+		return nil, fmt.Errorf("config: read %s: %w", path, err)
+	}
+	return out, nil
+}
+
+// parseDotEnv parses KEY=VALUE lines from r (see parseDotEnvFile).
+func parseDotEnv(r io.Reader) (map[string]string, error) {
 	out := map[string]string{}
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -257,7 +267,7 @@ func parseDotEnvFile(path string) (map[string]string, error) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("config: read %s: %w", path, err)
+		return nil, err
 	}
 	return out, nil
 }

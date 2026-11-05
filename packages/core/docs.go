@@ -2,6 +2,7 @@ package grove
 
 import (
 	"strings"
+	"sync/atomic"
 
 	"github.com/brandonbert8/grove/packages/router"
 )
@@ -42,6 +43,13 @@ func (a *App) Docs() []EndpointDoc {
 	return append([]EndpointDoc(nil), a.docs...)
 }
 
+// DocsVersion returns a counter that increments on every Docs change.
+// Caches derived from Docs (such as the mounted OpenAPI spec) compare it
+// to decide when a rebuild is required.
+func (a *App) DocsVersion() uint64 {
+	return atomic.LoadUint64(&a.docsVersion)
+}
+
 // RecordDocs captures one controller's metadata into Docs. Modules
 // record through Register automatically; call it directly to document
 // routes mounted below the App API (raw Router use), e.g.:
@@ -55,6 +63,10 @@ func (a *App) Docs() []EndpointDoc {
 // ("METHOD path" summary, {200: "OK"}/POST {201}) so CRUD tables stay
 // lean while Lint still flags truly undocumented routes.
 func (a *App) RecordDocs(c ControllerDef) {
+	if len(c.Endpoints) == 0 {
+		return
+	}
+	atomic.AddUint64(&a.docsVersion, 1)
 	for _, e := range c.Endpoints {
 		p := router.JoinPath(c.Prefix, e.Path)
 		if p == "" {
@@ -63,16 +75,16 @@ func (a *App) RecordDocs(c ControllerDef) {
 			p = "/" + p
 		}
 		doc := EndpointDoc{
-			Method:      strings.ToUpper(strings.TrimSpace(e.Method)),
-			Path:        p,
-			Summary:     e.Summary,
-			Description: e.Description,
-			Tags:        mergeTags(c.Tags, e.Tags),
-			Deprecated:  e.Deprecated,
-			Query:       append([]QueryDef(nil), e.Query...),
-			Responses:   copyResponses(e.Responses),
-			Security:    mergeTags(c.Security, e.Security),
-			BodySchema:  e.BodySchema,
+			Method:          strings.ToUpper(strings.TrimSpace(e.Method)),
+			Path:            p,
+			Summary:         e.Summary,
+			Description:     e.Description,
+			Tags:            mergeTags(c.Tags, e.Tags),
+			Deprecated:      e.Deprecated,
+			Query:           append([]QueryDef(nil), e.Query...),
+			Responses:       copyResponses(e.Responses),
+			Security:        mergeTags(c.Security, e.Security),
+			BodySchema:      e.BodySchema,
 			ResponseSchemas: copySchemas(e.ResponseSchemas),
 		}
 		// Last wins, like the router: re-recording a route replaces it

@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	grove "github.com/brandonbert8/grove/packages/core"
 	"github.com/brandonbert8/grove/packages/router"
@@ -86,21 +88,39 @@ var knownSchemes = map[string]SecurityScheme{
 }
 
 // extraSchemes holds security schemes registered via RegisterSecurityScheme.
-var extraSchemes = map[string]SecurityScheme{}
+var (
+	extraSchemes   = map[string]SecurityScheme{}
+	schemesMu      sync.RWMutex
+	schemesVersion atomic.Uint64
+)
 
 // RegisterSecurityScheme registers a custom security scheme (apiKey,
 // oauth2, openIdConnect, bearer variants) so Build emits it under
 // components.securitySchemes instead of leaving a dangling reference.
 func RegisterSecurityScheme(name string, scheme SecurityScheme) {
+	schemesMu.Lock()
 	extraSchemes[name] = scheme
+	schemesMu.Unlock()
+	schemesVersion.Add(1)
+}
+
+// lookupScheme returns a built-in or registered security scheme.
+func lookupScheme(name string) (SecurityScheme, bool) {
+	if scheme, ok := knownSchemes[name]; ok {
+		return scheme, true
+	}
+	schemesMu.RLock()
+	scheme, ok := extraSchemes[name]
+	schemesMu.RUnlock()
+	return scheme, ok
 }
 
 // Spec is an OpenAPI 3.1 document.
 type Spec struct {
-	OpenAPI    string                               `json:"openapi"`
-	Info       Info                                 `json:"info"`
-	Paths      map[string]map[string]Operation      `json:"paths"`
-	Components map[string]any                       `json:"components,omitempty"`
+	OpenAPI    string                          `json:"openapi"`
+	Info       Info                            `json:"info"`
+	Paths      map[string]map[string]Operation `json:"paths"`
+	Components map[string]any                  `json:"components,omitempty"`
 }
 
 // Build renders the app's documented routes (App.Docs, recorded at
@@ -167,10 +187,7 @@ func Build(app *grove.App, info Info) Spec {
 				continue
 			}
 			security = append(security, map[string][]string{name: {}})
-			scheme, ok := knownSchemes[name]
-			if !ok {
-				scheme, ok = extraSchemes[name]
-			}
+			scheme, ok := lookupScheme(name)
 			if ok {
 				if s.Components == nil {
 					s.Components = map[string]any{}
@@ -328,10 +345,11 @@ func normalizeParamType(t string) string {
 // JSON renders the spec.
 func (s Spec) JSON() ([]byte, error) { return json.MarshalIndent(s, "", "  ") }
 
-// Handler serves the spec as application/json.
+// Handler serves the spec as application/json. The document is encoded
+// once when Handler is called, so serving the same spec is allocation-free.
 func (s Spec) Handler() http.Handler {
+	raw, err := s.JSON()
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		raw, err := s.JSON()
 		if err != nil {
 			http.Error(w, "openapi: encode spec", http.StatusInternalServerError)
 			return
@@ -341,15 +359,52 @@ func (s Spec) Handler() http.Handler {
 	})
 }
 
+// specCache memoizes the encoded document for one Mount call. The key is
+// (App.Docs version, registered security schemes version), so routes or
+// schemes added after Mount still show up on the next request.
+type specCache struct {
+	mu             sync.Mutex
+	docsVersion    uint64
+	schemesVersion uint64
+	raw            []byte
+}
+
+func (c *specCache) bytes(app *grove.App, info Info) ([]byte, error) {
+	docsVersion := app.DocsVersion()
+	schemesVersion := schemesVersion.Load()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.raw != nil && c.docsVersion == docsVersion && c.schemesVersion == schemesVersion {
+		return c.raw, nil
+	}
+	raw, err := Build(app, info).JSON()
+	if err != nil {
+		return nil, err
+	}
+	c.raw = raw
+	c.docsVersion = docsVersion
+	c.schemesVersion = schemesVersion
+	return raw, nil
+}
+
 // Mount registers GET path serving the spec (e.g.
 // Mount(app, "/openapi.json", Info{...})), the one-line
-// SwaggerModule.setup equivalent. The spec builds per request from
-// App.Docs, so routes registered after Mount still appear; Mount
-// documents itself under the ops tag. The path honors the app's global
-// prefix like any other route.
+// SwaggerModule.setup equivalent. The document is cached and rebuilt only
+// when App.Docs or registered security schemes change, so routes added
+// after Mount still appear; Mount documents itself under the ops tag. The
+// path honors the app's global prefix like any other route.
 func Mount(app *grove.App, path string, info Info) {
+	cache := &specCache{}
 	app.RouteDoc("GET", path, func(c router.Context) error {
-		Build(app, info).Handler().ServeHTTP(c.ResponseWriter(), c.Request())
+		raw, err := cache.bytes(app, info)
+		if err != nil {
+			http.Error(c.ResponseWriter(), "openapi: encode spec", http.StatusInternalServerError)
+			return nil
+		}
+		w := c.ResponseWriter()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(raw)
 		return nil
 	}, grove.WithSummary("OpenAPI spec"), grove.WithTags("ops"))
 }

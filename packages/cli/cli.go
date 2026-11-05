@@ -78,7 +78,7 @@ func NewRootCommand() *cobra.Command {
 	root.PersistentFlags().BoolVar(&g.noColor, "no-color", false, "disable colored output (also: NO_COLOR, non-TTY)")
 	root.PersistentFlags().BoolVar(&g.verbose, "verbose", false, "show debug details (timings, paths, errors)")
 	root.SetHelpTemplate(helpTemplate)
-	root.AddCommand(newNewCommand(g), newGenerateCommand(g), newVersionCommand(), newLintCommand(g), newWireCommand(g), newGraphCommand(g), newDoctorCommand(g), newBuildCommand(g), newStartCommand(g), newTestCommand(g), newDevCommand(g))
+	root.AddCommand(newNewCommand(g), newGenerateCommand(g), newVersionCommand(), newLintCommand(g), newWireCommand(g), newGraphCommand(g), newRoutesCommand(g), newDoctorCommand(g), newBuildCommand(g), newStartCommand(g), newTestCommand(g), newDevCommand(g))
 	return root
 }
 

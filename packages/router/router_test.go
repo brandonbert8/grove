@@ -87,6 +87,28 @@ func TestMiddlewareOrder(t *testing.T) {
 	}
 }
 
+func TestUseAfterServeInvalidatesChain(t *testing.T) {
+	r := New()
+	r.GET("/x", func(c Context) error { return c.NoContent(204) })
+	if rec := doRequest(t, r, "GET", "/x"); rec.Code != 204 {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+
+	called := false
+	r.Use(func(next HandlerFunc) HandlerFunc {
+		return func(c Context) error {
+			called = true
+			return next(c)
+		}
+	})
+	if rec := doRequest(t, r, "GET", "/x"); rec.Code != 204 {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	if !called {
+		t.Fatal("middleware added after the first request did not run")
+	}
+}
+
 func TestGroupPrefix(t *testing.T) {
 	r := New()
 	g := r.Group("/api", func(next HandlerFunc) HandlerFunc { return next })

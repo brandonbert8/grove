@@ -68,6 +68,9 @@ type App struct {
 	shutdownTimeout time.Duration
 	// docs mirrors mounted endpoint metadata for docs/tooling.
 	docs []EndpointDoc
+	// docsVersion increments whenever docs changes. Caches (notably
+	// openapi.Mount) use it to invalidate without missing late routes.
+	docsVersion uint64
 	// globalPrefix scopes every controller route (e.g. "v1" → "/v1/...").
 	// Excluded prefixes (health, docs) bypass it.
 	globalPrefix     string

@@ -170,6 +170,29 @@ func TestMountSeesLaterRoutesAndItself(t *testing.T) {
 	}
 }
 
+func TestMountCacheRefreshesAfterDocsChange(t *testing.T) {
+	app := grove.New()
+	Mount(app, "/openapi.json", Info{Title: "Demo", Version: "1.0.0"})
+	fetchPaths := func() map[string]any {
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/openapi.json", nil))
+		var doc map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+			t.Fatal(err)
+		}
+		paths, _ := doc["paths"].(map[string]any)
+		return paths
+	}
+
+	if _, ok := fetchPaths()["/late"]; ok {
+		t.Fatal("unexpected /late before registration")
+	}
+	app.Route("GET", "/late", ok)
+	if _, ok := fetchPaths()["/late"]; !ok {
+		t.Fatal("cached spec did not refresh after a late route")
+	}
+}
+
 func TestWildcardAndRegexParams(t *testing.T) {
 	if got := operationID("GET", "/files/*"); got != "get_files_wildcard" {
 		t.Fatalf("wildcard opID = %q", got)

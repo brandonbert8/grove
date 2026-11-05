@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // FieldError describes one validation failure.
@@ -100,7 +101,83 @@ func validateValueFields(v any, strict bool, allow map[string]bool) []FieldError
 	if rv.Kind() != reflect.Struct {
 		return nil
 	}
-	return validateStruct(rv, "", strict, 0, map[[2]uintptr]bool{}, allow)
+	return validateStruct(rv, "", strict, 0, allow)
+}
+
+// ruleMeta is one parsed rule from a field's `validate` tag.
+type ruleMeta struct {
+	name  string
+	param string
+}
+
+// fieldMeta is the reflection work for one struct field, cached per type
+// so validation does not split tags on every request.
+type fieldMeta struct {
+	index    int
+	name     string
+	rules    []ruleMeta
+	required bool
+}
+
+// structFieldCache bounds memory even when callers validate dynamically
+// created types (e.g. reflect.StructOf in fuzz tests).
+const maxCachedStructTypes = 1024
+
+var (
+	structFieldCache  sync.Map // map[reflect.Type][]fieldMeta
+	structFieldCount  atomic.Int64
+)
+
+func fieldsFor(rt reflect.Type) []fieldMeta {
+	if cached, ok := structFieldCache.Load(rt); ok {
+		return cached.([]fieldMeta)
+	}
+	fields := buildFields(rt)
+	if structFieldCount.Load() < maxCachedStructTypes {
+		if _, loaded := structFieldCache.LoadOrStore(rt, fields); !loaded {
+			structFieldCount.Add(1)
+		}
+	}
+	return fields
+}
+
+func buildFields(rt reflect.Type) []fieldMeta {
+	fields := make([]fieldMeta, 0, rt.NumField())
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		name := f.Name
+		if tag, ok := f.Tag.Lookup("json"); ok {
+			jsonName, _, _ := strings.Cut(tag, ",")
+			if jsonName == "-" {
+				continue
+			}
+			if jsonName != "" {
+				name = jsonName
+			}
+		}
+		fm := fieldMeta{index: i, name: name}
+		if tag := f.Tag.Get("validate"); tag != "" {
+			for _, raw := range strings.Split(tag, ",") {
+				raw = strings.TrimSpace(raw)
+				if raw == "" {
+					continue
+				}
+				rule, param, _ := strings.Cut(raw, "=")
+				if rule == "-" {
+					continue
+				}
+				fm.rules = append(fm.rules, ruleMeta{name: rule, param: param})
+				if rule == "required" {
+					fm.required = true
+				}
+			}
+		}
+		fields = append(fields, fm)
+	}
+	return fields
 }
 
 // RuleFunc validates one field for a custom rule (see RegisterRule).
@@ -125,40 +202,23 @@ func RegisterRule(name string, fn RuleFunc) {
 	customRules.Store(name, fn)
 }
 
-func validateStruct(rv reflect.Value, prefix string, strict bool, depth int, seen map[[2]uintptr]bool, allow map[string]bool) []FieldError {
+func validateStruct(rv reflect.Value, prefix string, strict bool, depth int, allow map[string]bool) []FieldError {
 	var out []FieldError
 	if depth > maxValidateDepth {
 		return []FieldError{{Field: prefix, Tag: "depth", Message: "validation depth exceeded"}}
 	}
-	rt := rv.Type()
-	for i := 0; i < rt.NumField(); i++ {
-		f := rt.Field(i)
-		if !f.IsExported() {
-			continue
-		}
-		if tag, ok := f.Tag.Lookup("json"); ok {
-			if parts := strings.Split(tag, ","); parts[0] == "-" {
-				continue
-			}
-		}
-		fv := rv.Field(i)
-		name := f.Name
-		if tag, ok := f.Tag.Lookup("json"); ok {
-			if parts := strings.Split(tag, ","); parts[0] != "" && parts[0] != "-" {
-				name = parts[0]
-			}
-		}
+	for _, fm := range fieldsFor(rv.Type()) {
+		fv := rv.Field(fm.index)
 		// At the top level only validate fields the caller bound. This
 		// keeps a query/header/path DTO from being penalized for
 		// body-only required fields it never binds.
-		if prefix == "" && allow != nil && !allow[name] {
+		if prefix == "" && allow != nil && !allow[fm.name] {
 			continue
 		}
-		path := name
+		path := fm.name
 		if prefix != "" {
-			path = prefix + "." + name
+			path = prefix + "." + fm.name
 		}
-		tag := f.Tag.Get("validate")
 
 		// Recurse into nested structs (unless the field itself failed
 		// `required` while nil — a nil pointer is one error, not many).
@@ -170,10 +230,10 @@ func validateStruct(rv reflect.Value, prefix string, strict bool, depth int, see
 			deref = deref.Elem()
 		}
 		if deref.IsValid() && deref.Kind() == reflect.Struct && !isTimeLike(deref) {
-			if tag == "" || !hasRule(tag, "required") || !isNilOrZeroPointer(fv) {
+			if len(fm.rules) == 0 || !fm.required || !isNilOrZeroPointer(fv) {
 				// Depth-capped: cyclic pointer graphs terminate with
 				// a depth error instead of overflowing the stack.
-				out = append(out, validateStruct(deref, path, strict, depth+1, seen, nil)...)
+				out = append(out, validateStruct(deref, path, strict, depth+1, nil)...)
 			}
 		}
 		// Recurse into slices of structs for element validation.
@@ -187,39 +247,18 @@ func validateStruct(rv reflect.Value, prefix string, strict bool, depth int, see
 					ev = ev.Elem()
 				}
 				if ev.IsValid() && ev.Kind() == reflect.Struct && !isTimeLike(ev) {
-					out = append(out, validateStruct(ev, fmt.Sprintf("%s[%d]", path, j), strict, depth+1, seen, nil)...)
+					out = append(out, validateStruct(ev, fmt.Sprintf("%s[%d]", path, j), strict, depth+1, nil)...)
 				}
 			}
 		}
 
-		if tag == "" {
-			continue
-		}
-		for _, rule := range strings.Split(tag, ",") {
-			rule = strings.TrimSpace(rule)
-			if rule == "" {
-				continue
-			}
-			name, param, _ := strings.Cut(rule, "=")
-			if name == "-" {
-				continue // skip-validation marker: do not validate this field
-			}
-			if msg := checkRule(path, fv, name, param, strict); msg != "" {
-				out = append(out, FieldError{Field: path, Tag: name, Param: param, Message: msg})
+		for _, rule := range fm.rules {
+			if msg := checkRule(path, fv, rule.name, rule.param, strict); msg != "" {
+				out = append(out, FieldError{Field: path, Tag: rule.name, Param: rule.param, Message: msg})
 			}
 		}
 	}
 	return out
-}
-
-// hasRule reports whether a validate tag enables rule.
-func hasRule(tag, rule string) bool {
-	for _, r := range strings.Split(tag, ",") {
-		if n, _, _ := strings.Cut(strings.TrimSpace(r), "="); n == rule {
-			return true
-		}
-	}
-	return false
 }
 
 // isNilOrZeroPointer reports nil pointers/interfaces.
