@@ -388,6 +388,7 @@ Commands:
   graph       Print the module import graph
   lint        Audit docs coverage and configuration
   new         Create a new Grove application
+  routes      List HTTP routes from source
   start       Run the application
   test        Run the project tests
   version     Print the Grove CLI version
@@ -408,12 +409,14 @@ grove g resource billing                # full slice: module + service + control
 grove g controller billing              # add a controller (reports wiring)
 grove g service billing                 # add a service (patches providers)
 grove g guard jwt                       # CanActivate guard (also: pipe|filter|interceptor)
-grove dev                               # run with restart on .go changes
+grove dev                               # restart on source/config changes
 grove start --prod                      # run the app (go run .)
 grove test                              # run the project tests
 grove build                             # vet + test + compile
 grove wire --emit                       # generate wire_gen.go static DI wiring
 grove graph --format mermaid            # module graph (mermaid|dot|json)
+grove routes                            # source-level route table
+grove routes --method GET --format json # filter + machine-readable output
 grove doctor                            # modules + wiring + docs + config audit
 grove version                           # CLI + Go + OS
 grove --no-color new demo               # plain output for CI/logs
@@ -438,6 +441,24 @@ modules:
 module graph for review.
 
 Generated code compiles — CI even builds a fresh scaffold to prove it.
+
+## Development
+
+```bash
+make test     # go test ./...
+make race     # go test -race ./... (needs cgo)
+make cover    # coverage profile + per-function summary
+make bench    # benchmarks with allocation counts
+make vet
+```
+
+CI enforces formatting, vet, build, tests, race, and a fresh-scaffold
+smoke test on Ubuntu, and runs build + tests on Windows and macOS.
+Advisory staticcheck and govulncheck jobs surface findings without
+blocking the build while the baseline is triaged. Fuzz tests cover JWT
+verification, `.env` parsing, validation tags, and router patterns;
+benchmarks cover the router, DI container, OpenAPI builder, metrics
+registry, and validation engine.
 
 ## 🏗️ Project Structure
 

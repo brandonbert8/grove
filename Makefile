@@ -1,4 +1,4 @@
-.PHONY: build test vet fmt lint run-hello grove-version tidy build-cli
+.PHONY: build test race cover bench vet fmt lint run-hello grove-version tidy build-cli
 
 build:
 	go build ./...
@@ -11,6 +11,16 @@ build-cli:
 
 test:
 	go test ./...
+
+race:
+	go test -race ./...
+
+cover:
+	go test -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out
+
+bench:
+	go test -run '^$$' -bench . -benchmem ./packages/...
 
 vet:
 	go vet ./...
