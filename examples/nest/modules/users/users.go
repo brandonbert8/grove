@@ -142,16 +142,12 @@ var UsersModule = &grove.ModuleDef{
 			return NewService(), nil
 		}),
 	},
-	BuildControllers: func(app *grove.App) ([]grove.ControllerDef, error) {
-		ctrl, err := grove.Wire(app, NewController)
+	Build: grove.BuildWith(NewController, func(m *grove.ModuleContext, ctrl *Controller) (grove.ControllerDef, error) {
+		guard, err := authmod.Guard(m.App.Container)
 		if err != nil {
-			return nil, err
+			return grove.ControllerDef{}, err
 		}
-		guard, err := authmod.Guard(app.Container)
-		if err != nil {
-			return nil, err
-		}
-		return []grove.ControllerDef{{
+		return grove.ControllerDef{
 			Prefix:     "/users",
 			Tags:       []string{"users"},
 			Security:   []string{"bearerAuth"},
@@ -175,6 +171,6 @@ var UsersModule = &grove.ModuleDef{
 					openapi.WithResponse[User](201, "created user"),
 					grove.WithResponses(map[int]string{401: "missing token", 403: "non-admin", 422: "invalid DTO"})),
 			},
-		}}, nil
-	},
+		}, nil
+	}),
 }

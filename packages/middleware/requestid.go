@@ -27,14 +27,17 @@ func RequestID() router.Middleware {
 		return func(c router.Context) error {
 			id := c.Request().Header.Get(RequestIDHeader)
 			if !validRequestID(id) {
+				// A valid inbound id is already visible through
+				// GetRequestID's header fallback, so only minted ids need a
+				// request-context value (saves two allocations per request).
 				id = newRequestID()
-			}
-			if sr, ok := c.(interface{ SetRequest(*http.Request) }); ok {
-				sr.SetRequest(c.Request().WithContext(
-					context.WithValue(c.Request().Context(), requestIDKey{}, id)))
-			} else {
-				*c.Request() = *c.Request().WithContext(
-					context.WithValue(c.Request().Context(), requestIDKey{}, id))
+				if sr, ok := c.(interface{ SetRequest(*http.Request) }); ok {
+					sr.SetRequest(c.Request().WithContext(
+						context.WithValue(c.Request().Context(), requestIDKey{}, id)))
+				} else {
+					*c.Request() = *c.Request().WithContext(
+						context.WithValue(c.Request().Context(), requestIDKey{}, id))
+				}
 			}
 			c.ResponseWriter().Header().Set(RequestIDHeader, id)
 			return next(c)

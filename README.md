@@ -139,38 +139,34 @@ users := &grove.ModuleDef{
     },
     // Isolated: true, // opt in per module (or app.EnableModuleIsolation())
     // Exports: []string{di.KeyFor[*UsersService]()}, // visible to importers
-    Build: func(m *grove.ModuleContext) error {
-        ctrls, err := grove.Controllers(m, NewUsersController, func(ctrl *UsersController) grove.ControllerDef {
-            return grove.ControllerDef{
-                Prefix:     "/users",
-                Tags:       []string{"users"},
-                Security:   []string{"bearerAuth"},
-                Middleware: []router.Middleware{guard}, // guards & interceptors
-                Endpoints: []grove.Endpoint{
-                    grove.GET("", ctrl.List,
-                        grove.WithSummary("List users"),
-                        grove.WithResponses(map[int]string{200: "users"})),
-                    grove.GET("/{id}", ctrl.Get, grove.WithSummary("Get user")),
-                    grove.POST("", ctrl.Create,
-                        grove.Use(fauth.RequireRole("admin")),
-                        grove.WithSummary("Create user (admin)")),
-                },
-            }
-        })
-        if err != nil {
-            return err
+    Build: grove.Build(NewUsersController, func(ctrl *UsersController) grove.ControllerDef {
+        return grove.ControllerDef{
+            Prefix: "/users",
+            Tags:   []string{"users"},
+            Endpoints: []grove.Endpoint{
+                grove.GET("", ctrl.List,
+                    grove.WithSummary("List users"),
+                    grove.WithResponses(map[int]string{200: "users"})),
+                grove.GET("/{id}", ctrl.Get, grove.WithSummary("Get user")),
+                grove.POST("", ctrl.Create,
+                    grove.Use(fauth.RequireRole("admin")),
+                    grove.WithSummary("Create user (admin)")),
+            },
         }
-        m.Controllers(ctrls...)
-        return nil
-    },
+    }),
 }
 app.MustRegister(users.AsModule())
 ```
 
-`ModuleDef.Build` receives a `*ModuleContext`, so `grove.Inject` /
-`grove.Wire` enforce visibility when the module is isolated. Legacy
-modules keep app-wide provider visibility; isolated modules resolve only
-their own providers, imported `Exports`, and `@Global` exports.
+`grove.Build` wires the controller with constructor injection and mounts
+its route table, with no `nil, err` plumbing. When the route table needs
+the module context too (for example to resolve a guard), use
+`grove.BuildWith`, which passes `*grove.ModuleContext` to the definition.
+
+Because `ModuleDef.Build` receives a `*ModuleContext`, `grove.Inject` /
+`grove.Wire` enforce visibility when the module is isolated. Legacy modules keep
+app-wide provider visibility; isolated modules resolve only their own
+providers, imported `Exports`, and `@Global` exports.
 
 Shared/barrel modules can re-export an imported module (NestJS
 `exports: [SomeModule]`) so consumers import one module instead of every
@@ -378,27 +374,34 @@ interfaces directly.
 A structured backend framework for Go.
 
 Usage:
+  grove [flags]
   grove [command]
 
-Commands:
+Create:
+  generate    Generate a Grove component
+  new         Create a new Grove application
+
+Develop:
   build       Vet, test and compile the project
   dev         Run with restart on file changes
-  doctor      Audit modules, wiring, docs and configuration
-  generate    Generate a Grove component
-  graph       Print the module import graph
-  lint        Audit docs coverage and configuration
-  new         Create a new Grove application
-  routes      List HTTP routes from source
   start       Run the application
   test        Run the project tests
-  version     Print the Grove CLI version
+
+Inspect:
+  doctor      Audit modules, wiring, docs and configuration
+  graph       Print the module import graph
+  lint        Audit docs coverage and configuration
+  routes      List HTTP routes from source
   wire        Count DI providers (wiring smoke check)
 
-Aliases:
-  generate, g
+Other:
+  help        Help about any command
+  version     Print the Grove CLI version
 
 Examples:
   grove new api
+  cd api
+  grove dev
   grove g module users
 ```
 
@@ -412,6 +415,7 @@ grove g guard jwt                       # CanActivate guard (also: pipe|filter|i
 grove dev                               # restart on source/config changes
 grove start --prod                      # run the app (go run .)
 grove test                              # run the project tests
+grove test -- -race ./...               # pass go test flags after --
 grove build                             # vet + test + compile
 grove wire --emit                       # generate wire_gen.go static DI wiring
 grove graph --format mermaid            # module graph (mermaid|dot|json)
@@ -422,6 +426,11 @@ grove version                           # CLI + Go + OS
 grove --no-color new demo               # plain output for CI/logs
 grove --verbose new demo                # debug details
 ```
+
+The CLI groups commands by workflow, suggests close command names on typos,
+and exits `2` for usage errors (missing names, unknown flags). Machine-readable
+`routes --format json` and `graph --format ...` output stays pipeable because
+warnings are kept off stdout.
 
 `grove doctor` also enforces an optional architecture contract in
 `grove.arch.yaml` (no YAML dependency, parsed as a small subset):

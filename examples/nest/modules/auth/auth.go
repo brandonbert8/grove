@@ -10,7 +10,6 @@ import (
 	fauth "github.com/brandonbert8/grove/packages/auth"
 	grove "github.com/brandonbert8/grove/packages/core"
 	"github.com/brandonbert8/grove/packages/di"
-	"github.com/brandonbert8/grove/packages/pipes"
 	"github.com/brandonbert8/grove/packages/router"
 )
 
@@ -57,17 +56,13 @@ func NewController(jwt *fauth.Service, store *fauth.MemoryRefreshStore) *Control
 }
 
 // Login validates credentials and issues an access + refresh pair.
-func (c *Controller) Login(ctx router.Context) error {
-	in, err := pipes.Body[loginInput](ctx)
-	if err != nil {
-		return err
-	}
+func (c *Controller) Login(ctx router.Context, in loginInput) (any, error) {
 	u, ok := users[in.Username]
 	if !ok {
-		return grove.Unauthorized("invalid credentials")
+		return nil, grove.Unauthorized("invalid credentials")
 	}
 	if err := fauth.ComparePassword(u.passwordHash, in.Password); err != nil {
-		return grove.Unauthorized("invalid credentials")
+		return nil, grove.Unauthorized("invalid credentials")
 	}
 	roles := make([]any, 0, len(u.roles))
 	for _, r := range u.roles {
@@ -75,35 +70,31 @@ func (c *Controller) Login(ctx router.Context) error {
 	}
 	pair, err := c.jwt.IssuePair(in.Username, map[string]any{"roles": roles})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := c.store.Store(ctx.Request().Context(), pair.RefreshID, in.Username, time.Unix(pair.RefreshExpiresAt, 0)); err != nil {
-		return err
+		return nil, err
 	}
-	return ctx.JSON(200, map[string]any{
-		"access_token":  pair.AccessToken,
-		"refresh_token": pair.RefreshToken,
-		"expires_in":    pair.ExpiresAt - time.Now().Unix(),
-		"token_type":    "Bearer",
-	})
+	return tokenResponse(pair), nil
 }
 
 // Refresh redeems a single-use refresh token for the next pair.
-func (c *Controller) Refresh(ctx router.Context) error {
-	in, err := pipes.Body[refreshInput](ctx)
-	if err != nil {
-		return err
-	}
+func (c *Controller) Refresh(ctx router.Context, in refreshInput) (any, error) {
 	pair, err := fauth.Rotate(ctx.Request().Context(), c.jwt, c.store, in.RefreshToken)
 	if err != nil {
-		return grove.Unauthorized("invalid refresh token")
+		return nil, grove.Unauthorized("invalid refresh token")
 	}
-	return ctx.JSON(200, map[string]any{
+	return tokenResponse(pair), nil
+}
+
+// tokenResponse is the shared login/refresh response body.
+func tokenResponse(pair fauth.TokenPair) map[string]any {
+	return map[string]any{
 		"access_token":  pair.AccessToken,
 		"refresh_token": pair.RefreshToken,
 		"expires_in":    pair.ExpiresAt - time.Now().Unix(),
 		"token_type":    "Bearer",
-	})
+	}
 }
 
 // Guard protects routes with bearer JWTs. It resolves the shared service
@@ -126,18 +117,14 @@ var AuthModule = &grove.ModuleDef{
 		}),
 		grove.Provide0(di.Singleton, fauth.NewMemoryRefreshStore),
 	},
-	BuildControllers: func(app *grove.App) ([]grove.ControllerDef, error) {
-		ctrl, err := grove.Wire2(app, NewController)
-		if err != nil {
-			return nil, err
-		}
-		return []grove.ControllerDef{{
+	Build: grove.Build2(NewController, func(ctrl *Controller) grove.ControllerDef {
+		return grove.ControllerDef{
 			Prefix: "/auth",
 			Tags:   []string{"auth"},
 			Endpoints: []grove.Endpoint{
-				grove.POST("/login", ctrl.Login, grove.WithSummary("Issue token pair")),
-				grove.POST("/refresh", ctrl.Refresh, grove.WithSummary("Rotate token pair")),
+				grove.POST("/login", grove.HandleBodyOK(ctrl.Login), grove.WithSummary("Issue token pair")),
+				grove.POST("/refresh", grove.HandleBodyOK(ctrl.Refresh), grove.WithSummary("Rotate token pair")),
 			},
-		}}, nil
-	},
+		}
+	}),
 }

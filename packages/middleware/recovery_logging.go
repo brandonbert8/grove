@@ -68,22 +68,23 @@ func Logging(log logger.Logger, skip ...func(r *http.Request) bool) router.Middl
 				}
 			}
 			start := time.Now()
-			rec := &statusRecorder{ResponseWriter: c.ResponseWriter(), status: http.StatusOK}
-			// Swap the writer for the duration of the request so the
-			// status code can be observed without changing the Context API.
-			origCtx := c
-			wrapped := &writerSwapContext{Context: origCtx, writer: rec}
+			// One allocation carries both the Context override and the
+			// status-capturing writer.
+			wrapped := &loggingContext{Context: c}
+			wrapped.statusRecorder.ResponseWriter = c.ResponseWriter()
+			wrapped.status = http.StatusOK
 			err := next(wrapped)
-			status := rec.status
-			if err != nil && !rec.wrote {
+			status := wrapped.status
+			if err != nil && !wrapped.wrote {
 				status = http.StatusInternalServerError
 			}
-			fields := []any{
+			fields := make([]any, 0, 10)
+			fields = append(fields,
 				"method", c.Request().Method,
 				"path", c.Request().URL.Path,
 				"status", status,
 				"duration_ms", time.Since(start).Milliseconds(),
-			}
+			)
 			// Correlate with RequestID when it ran (outermost-global
 			// ordering puts RequestID before Logging).
 			if id := GetRequestID(c); id != "" {
@@ -93,6 +94,26 @@ func Logging(log logger.Logger, skip ...func(r *http.Request) bool) router.Middl
 			return err
 		}
 	}
+}
+
+// loggingContext combines the Context override and status recorder in one
+// per-request allocation.
+type loggingContext struct {
+	router.Context
+	statusRecorder
+}
+
+// ResponseWriter returns the recording writer.
+func (c *loggingContext) ResponseWriter() http.ResponseWriter { return &c.statusRecorder }
+
+// SetRequest forwards to the underlying context when it supports it,
+// falling back to in-place mutation (matching setRequest semantics).
+func (c *loggingContext) SetRequest(r *http.Request) {
+	if sr, ok := c.Context.(interface{ SetRequest(*http.Request) }); ok {
+		sr.SetRequest(r)
+		return
+	}
+	*c.Context.Request() = *r
 }
 
 // writerSwapContext overrides only the ResponseWriter.

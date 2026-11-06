@@ -39,26 +39,22 @@ func (c *GreetingController) Greet(ctx router.Context) error {
 }
 
 // HelloModule wires the service and route into the app using the
-// idiomatic Grove pattern: Providers for DI, BuildControllers for
-// constructor-injected route tables. No inline RegisterSingletonAs and no
+// idiomatic Grove pattern: Providers for DI and Build for the
+// constructor-injected route table. No inline RegisterSingletonAs and no
 // ad-hoc app.Route — everything goes through ModuleDef.
 var HelloModule = &grove.ModuleDef{
 	Name: "hello",
 	Providers: []grove.Provider{
 		grove.Provide0(di.Singleton, NewGreetingService),
 	},
-	BuildControllers: func(app *grove.App) ([]grove.ControllerDef, error) {
-		ctrl, err := grove.Wire(app, NewGreetingController)
-		if err != nil {
-			return nil, err
-		}
-		return []grove.ControllerDef{{
+	Build: grove.Build(NewGreetingController, func(ctrl *GreetingController) grove.ControllerDef {
+		return grove.ControllerDef{
 			Prefix: "/hello",
 			Endpoints: []grove.Endpoint{
 				grove.GET("", ctrl.Greet),
 			},
-		}}, nil
-	},
+		}
+	}),
 }
 
 func main() {
