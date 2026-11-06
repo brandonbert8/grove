@@ -381,8 +381,9 @@ func newRoutesCommand(g *globalOpts) *cobra.Command {
 			"Source-level and conservative: route tables built dynamically may be\n" +
 			"missing. Use app.Docs()/App.ModuleGraph() for the runtime view.",
 		Example: "  grove routes\n  grove routes --method GET\n  grove routes --format json",
+		Args:    noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r := renderer(cmd, g)
+			r := diagnostics(cmd, g)
 			cwd, err := os.Getwd()
 			if err != nil {
 				return fail(r, 1, "Could not list routes", err.Error(), "", err)
@@ -419,7 +420,12 @@ func newRoutesCommand(g *globalOpts) *cobra.Command {
 				return &exitError{code: 2, err: &UsageError{Msg: "unknown routes format"}}
 			}
 			if len(res.Routes) == 0 && format != "json" {
-				r.Muted("No routes found.")
+				if strings.TrimSpace(method) != "" || strings.TrimSpace(prefix) != "" {
+					r.Muted("No routes matched the current filters.")
+					r.Muted("Try: grove routes")
+				} else {
+					r.Muted("No routes found.")
+				}
 			}
 			return nil
 		},

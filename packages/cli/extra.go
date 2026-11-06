@@ -12,9 +12,13 @@ func newLintCommand(g *globalOpts) *cobra.Command {
 	return &cobra.Command{
 		Use:   "lint",
 		Short: "Audit docs coverage and configuration",
+		Long: "Check controller docs coverage and configuration schema.\n" +
+			"Exits 1 when warnings are found so CI can gate on it.",
+		Example: "  grove lint",
+		Args:    noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := renderer(cmd, g)
-			r.Header("")
+			r.Header(CLIVersion())
 			cwd, err := os.Getwd()
 			if err != nil {
 				return fail(r, 1, "Could not lint", err.Error(), "", err)
@@ -44,12 +48,14 @@ func newLintCommand(g *globalOpts) *cobra.Command {
 func newWireCommand(g *globalOpts) *cobra.Command {
 	var emit bool
 	cmd := &cobra.Command{
-		Use:   "wire",
-		Short: "Count DI providers (wiring smoke check)",
-		Long:  "Heuristically counts grove.Provide* calls without running the app.\n--emit is experimental (post-v1 research): it generates wire_gen.go\nscaffolding that is NOT required for v1 runtime DI (grove.Inject/Wire\nplus request-scoped grove.ProvideRequest/grove.InjectRequest).\nDuplicate keys fail fast at runtime in ModuleDef.Register.",
+		Use:     "wire",
+		Short:   "Count DI providers (wiring smoke check)",
+		Long:    "Heuristically counts grove.Provide* calls without running the app.\n--emit is experimental (post-v1 research): it generates wire_gen.go\nscaffolding that is NOT required for v1 runtime DI (grove.Inject/Wire\nplus request-scoped grove.ProvideRequest/grove.InjectRequest).\nDuplicate keys fail fast at runtime in ModuleDef.Register.",
+		Example: "  grove wire\n  grove wire --emit",
+		Args:    noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := renderer(cmd, g)
-			r.Header("")
+			r.Header(CLIVersion())
 			cwd, err := os.Getwd()
 			if err != nil {
 				return fail(r, 1, "Could not wire", err.Error(), "", err)
@@ -93,9 +99,13 @@ func newBuildCommand(g *globalOpts) *cobra.Command {
 	return &cobra.Command{
 		Use:   "build",
 		Short: "Vet, test and compile the project",
+		Long: "Run go vet, go test and go build in order.\n" +
+			"Stops at the first failing step.",
+		Example: "  grove build",
+		Args:    noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := renderer(cmd, g)
-			r.Header("")
+			r.Header(CLIVersion())
 			cwd, err := os.Getwd()
 			if err != nil {
 				return fail(r, 1, "Could not build", err.Error(), "", err)
@@ -116,10 +126,12 @@ func newBuildCommand(g *globalOpts) *cobra.Command {
 func newStartCommand(g *globalOpts) *cobra.Command {
 	var prod bool
 	cmd := &cobra.Command{
-		Use:     "start [-- app args...]",
-		Short:   "Run the application",
+		Use:   "start [-- app args...]",
+		Short: "Run the application",
+		Long: "Run the application with go run.\n" +
+			"Pass application flags after --.",
 		Args:    cobra.ArbitraryArgs,
-		Example: "  grove start\n  grove start --prod -- --port 8080",
+		Example: "  grove start\n  grove start -- --port 8080\n  grove start --prod -- --port 8080",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := renderer(cmd, g)
 			cwd, err := os.Getwd()
@@ -145,8 +157,12 @@ func newStartCommand(g *globalOpts) *cobra.Command {
 // newTestCommand builds `grove test`: run the project test suite.
 func newTestCommand(g *globalOpts) *cobra.Command {
 	return &cobra.Command{
-		Use:   "test",
+		Use:   "test [-- go test args...]",
 		Short: "Run the project tests",
+		Long: "Run go test ./... by default.\n" +
+			"Pass a package or go test flags after --.",
+		Example: "  grove test\n  grove test ./modules/users\n  grove test -- -race -run TestUsers",
+		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := renderer(cmd, g)
 			cwd, err := os.Getwd()
@@ -173,8 +189,10 @@ func newTestCommand(g *globalOpts) *cobra.Command {
 func newDevCommand(g *globalOpts) *cobra.Command {
 	var interval int
 	cmd := &cobra.Command{
-		Use:     "dev [-- app args...]",
-		Short:   "Run with restart on file changes",
+		Use:   "dev [-- app args...]",
+		Short: "Run with restart on file changes",
+		Long: "Run the application and restart it when source or config files change.\n" +
+			"Pass application flags after --.",
 		Args:    cobra.ArbitraryArgs,
 		Example: "  grove dev\n  grove dev -- --port 8080",
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -36,6 +36,18 @@ func TestHelp(t *testing.T) {
 	}
 }
 
+func TestHelpGroupsAndQuickStart(t *testing.T) {
+	stdout, code := run(t, "", "--help")
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	for _, want := range []string{"Create:", "Develop:", "Inspect:", "Other:", "grove [command]", "cd api"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("help missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
 func TestVersion(t *testing.T) {
 	stdout, code := run(t, "", "version")
 	if code != 0 {
@@ -103,11 +115,52 @@ func TestUnknownCommand(t *testing.T) {
 	}
 }
 
+func TestUnknownCommandSuggests(t *testing.T) {
+	stdout, code := run(t, "", "generat")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(stdout, "Did you mean this?") || !strings.Contains(stdout, "generate") {
+		t.Fatalf("missing suggestion:\n%s", stdout)
+	}
+}
+
+func TestUnknownFlagIsUsageError(t *testing.T) {
+	stdout, code := run(t, "", "--nope")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2\n%s", code, stdout)
+	}
+	if !strings.Contains(stdout, "unknown flag") || !strings.Contains(stdout, "--help") {
+		t.Fatalf("missing flag guidance:\n%s", stdout)
+	}
+}
+
 func TestUnknownGenerateKind(t *testing.T) {
 	dir := setupProject(t)
 	_, code := run(t, dir, "generate", "repository", "users")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2", code)
+	}
+}
+
+func TestGenerateMissingNameGuides(t *testing.T) {
+	dir := setupProject(t)
+	stdout, code := run(t, dir, "g", "interceptor")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2\n%s", code, stdout)
+	}
+	if !strings.Contains(stdout, "grove g interceptor tracing") || !strings.Contains(stdout, "Missing name") {
+		t.Fatalf("missing actionable guidance:\n%s", stdout)
+	}
+}
+
+func TestExtraArgsUseCommandSpecificHelp(t *testing.T) {
+	stdout, code := run(t, "", "doctor", "extra")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2\n%s", code, stdout)
+	}
+	if !strings.Contains(stdout, "unexpected argument") || !strings.Contains(stdout, "grove doctor --help") {
+		t.Fatalf("missing command-specific guidance:\n%s", stdout)
 	}
 }
 

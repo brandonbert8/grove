@@ -18,8 +18,9 @@ func newGraphCommand(g *globalOpts) *cobra.Command {
 			"Source-level and conservative: modules built dynamically at runtime\n" +
 			"may be missing. Use App.ModuleGraph() for the runtime view.",
 		Example: "  grove graph\n  grove graph --format dot\n  grove graph --format json",
+		Args:    noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r := renderer(cmd, g)
+			r := diagnostics(cmd, g)
 			cwd, err := os.Getwd()
 			if err != nil {
 				return fail(r, 1, "Could not graph", err.Error(), "", err)
@@ -63,9 +64,13 @@ func newDoctorCommand(g *globalOpts) *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
 		Short: "Audit modules, wiring, docs and configuration",
+		Long: "Run lint, wiring, graph and architecture checks in one pass.\n" +
+			"Reads grove.arch.yaml when present and exits 1 on problems.",
+		Example: "  grove doctor",
+		Args:    noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := renderer(cmd, g)
-			r.Header("")
+			r.Header(CLIVersion())
 			cwd, err := os.Getwd()
 			if err != nil {
 				return fail(r, 1, "Could not run doctor", err.Error(), "", err)

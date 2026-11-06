@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,8 +22,10 @@ type globalOpts struct {
 }
 
 // UsageError marks argument problems. Main maps it to exit code 2.
+// Usage optionally names the help command that explains correct usage.
 type UsageError struct {
-	Msg string
+	Msg   string
+	Usage string
 }
 
 // Error implements error.
@@ -49,21 +52,35 @@ func fail(r *ui.Renderer, code int, title, detail, hint string, err error) error
 	return &exitError{code: code, err: errors.New(title)}
 }
 
+const (
+	groupCreate  = "create"
+	groupDevelop = "develop"
+	groupInspect = "inspect"
+	groupOther   = "other"
+)
+
 // NewRootCommand builds the Grove command tree:
 //
 //	grove
 //	├── new [project] [--force] [--grove-version]
 //	├── generate (g) module|controller|service|resource [name]
+//	├── dev|start|build|test
+//	├── routes|graph|doctor|lint|wire
 //	└── version
 func NewRootCommand() *cobra.Command {
 	g := &globalOpts{}
 	root := &cobra.Command{
-		Use:           "grove",
-		Short:         "A structured backend framework for Go",
-		Long:          "A structured backend framework for Go.\n\nAlias: g is shorthand for generate.",
-		Version:       CLIVersion(),
-		Example:       "  grove new api\n  grove g module users\n  grove g controller users",
-		Args:          cobra.NoArgs,
+		Use:     "grove",
+		Short:   "A structured backend framework for Go",
+		Long:    "A structured backend framework for Go.\n\nCreate a project, generate modules, and inspect routes without leaving\nthe terminal. The g alias is shorthand for generate.",
+		Version: CLIVersion(),
+		Example: "  grove new api\n  cd api\n  grove dev\n  grove g module users",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return unknownCommandError(cmd, args[0])
+			}
+			return nil
+		},
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		// A Run keeps bare `grove` on help; anything else fails arg
@@ -77,14 +94,88 @@ func NewRootCommand() *cobra.Command {
 	root.CompletionOptions.DisableDefaultCmd = true
 	root.PersistentFlags().BoolVar(&g.noColor, "no-color", false, "disable colored output (also: NO_COLOR, non-TTY)")
 	root.PersistentFlags().BoolVar(&g.verbose, "verbose", false, "show debug details (timings, paths, errors)")
+	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return &UsageError{Msg: err.Error(), Usage: cmd.CommandPath() + " --help"}
+	})
 	root.SetHelpTemplate(helpTemplate)
-	root.AddCommand(newNewCommand(g), newGenerateCommand(g), newVersionCommand(), newLintCommand(g), newWireCommand(g), newGraphCommand(g), newRoutesCommand(g), newDoctorCommand(g), newBuildCommand(g), newStartCommand(g), newTestCommand(g), newDevCommand(g))
+	root.AddGroup(
+		&cobra.Group{ID: groupCreate, Title: "Create"},
+		&cobra.Group{ID: groupDevelop, Title: "Develop"},
+		&cobra.Group{ID: groupInspect, Title: "Inspect"},
+		&cobra.Group{ID: groupOther, Title: "Other"},
+	)
+
+	newCmd := newNewCommand(g)
+	newCmd.GroupID = groupCreate
+	generateCmd := newGenerateCommand(g)
+	generateCmd.GroupID = groupCreate
+	devCmd := newDevCommand(g)
+	devCmd.GroupID = groupDevelop
+	startCmd := newStartCommand(g)
+	startCmd.GroupID = groupDevelop
+	buildCmd := newBuildCommand(g)
+	buildCmd.GroupID = groupDevelop
+	testCmd := newTestCommand(g)
+	testCmd.GroupID = groupDevelop
+	routesCmd := newRoutesCommand(g)
+	routesCmd.GroupID = groupInspect
+	graphCmd := newGraphCommand(g)
+	graphCmd.GroupID = groupInspect
+	doctorCmd := newDoctorCommand(g)
+	doctorCmd.GroupID = groupInspect
+	lintCmd := newLintCommand(g)
+	lintCmd.GroupID = groupInspect
+	wireCmd := newWireCommand(g)
+	wireCmd.GroupID = groupInspect
+	versionCmd := newVersionCommand()
+	versionCmd.GroupID = groupOther
+
+	root.AddCommand(newCmd, generateCmd, devCmd, startCmd, buildCmd, testCmd, routesCmd, graphCmd, doctorCmd, lintCmd, wireCmd, versionCmd)
+	root.InitDefaultHelpCmd()
+	for _, c := range root.Commands() {
+		if c.Name() == "help" {
+			c.GroupID = groupOther
+		}
+	}
 	return root
+}
+
+// unknownCommandError renders a typo-friendly usage error with
+// suggestions for the closest command names.
+func unknownCommandError(cmd *cobra.Command, name string) error {
+	msg := fmt.Sprintf("unknown command %q for %q", name, cmd.CommandPath())
+	if suggestions := cmd.SuggestionsFor(name); len(suggestions) > 0 {
+		msg += "\n\nDid you mean this?"
+		for _, s := range suggestions {
+			msg += "\n\t" + s
+		}
+	}
+	return &UsageError{Msg: msg, Usage: cmd.CommandPath() + " --help"}
+}
+
+// noArgs rejects positional arguments with command-specific guidance.
+func noArgs(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	return &UsageError{
+		Msg:   fmt.Sprintf("unexpected argument %q for %q", args[0], cmd.CommandPath()),
+		Usage: cmd.CommandPath() + " --help",
+	}
 }
 
 // renderer builds the ui Renderer for a command from global flags.
 func renderer(cmd *cobra.Command, g *globalOpts) *ui.Renderer {
-	out := cmd.OutOrStdout()
+	return rendererFor(cmd.OutOrStdout(), g)
+}
+
+// diagnostics renders warnings and failures on stderr so machine-readable
+// stdout (routes --format json, graph --format mermaid) stays clean.
+func diagnostics(cmd *cobra.Command, g *globalOpts) *ui.Renderer {
+	return rendererFor(cmd.ErrOrStderr(), g)
+}
+
+func rendererFor(out io.Writer, g *globalOpts) *ui.Renderer {
 	return ui.New(out,
 		ui.WithColor(ui.DetectColor(out, g.noColor)),
 		ui.WithVerbose(g.verbose),
@@ -112,8 +203,17 @@ func runRoot(root *cobra.Command) int {
 		errOut := root.ErrOrStderr()
 		r := ui.New(errOut, ui.WithColor(ui.DetectColor(errOut, false)))
 		msg := err.Error()
+		var ue *UsageError
+		if errors.As(err, &ue) {
+			usage := ue.Usage
+			if usage == "" {
+				usage = "grove --help"
+			}
+			r.Failure("Command failed", ue.Msg, fmt.Sprintf(`Run "%s" for usage.`, usage))
+			return 2
+		}
 		code := 1
-		if strings.Contains(msg, "unknown command") {
+		if isUsageMessage(msg) {
 			code = 2
 		}
 		r.Failure("Command failed", msg, `Run "grove --help" for usage.`)
@@ -122,39 +222,77 @@ func runRoot(root *cobra.Command) int {
 	return 0
 }
 
+// isUsageMessage classifies cobra argument errors that do not carry a
+// UsageError yet still mean "wrong invocation" (exit 2, not 1).
+func isUsageMessage(msg string) bool {
+	for _, marker := range []string{
+		"unknown command",
+		"unknown flag",
+		"flag needs an argument",
+		"invalid argument",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // helpTemplate is the compact branded help. It mirrors cobra's default
 // sections without the noise.
 const helpTemplate = `◆ Grove
 
 {{with .Long}}{{. | trimTrailingWhitespaces}}{{else}}{{with .Short}}{{. | trimTrailingWhitespaces}}{{end}}{{end}}
 
-{{if .Runnable}}Usage:
-  {{.UseLine}}
-{{end}}{{if .HasAvailableSubCommands}}Commands:
+{{if or .Runnable .HasAvailableSubCommands}}Usage:
+{{if .Runnable}}  {{.UseLine}}
+{{end}}{{if .HasAvailableSubCommands}}  {{.CommandPath}} [command]
+{{end}}{{end}}
+{{if gt (len .Aliases) 0}}Aliases:
+  {{.NameAndAliases}}
+{{end}}{{if .HasAvailableSubCommands}}{{if eq (len .Groups) 0}}Commands:
 {{range .Commands}}{{if (or .IsAvailableCommand (eq .Name "help"))}}  {{rpad .Name .NamePadding }} {{.Short}}
+{{end}}{{end}}
+{{else}}{{range $group := .Groups}}{{.Title}}:
+{{range $cmd := $.Commands}}{{if (and (eq $cmd.GroupID $group.ID) (or $cmd.IsAvailableCommand (eq $cmd.Name "help")))}}  {{rpad $cmd.Name $cmd.NamePadding }} {{$cmd.Short}}
+{{end}}{{end}}
+{{end}}{{if not .AllChildCommandsHaveGroup}}Additional Commands:
+{{range .Commands}}{{if (and (eq .GroupID "") (or .IsAvailableCommand (eq .Name "help")))}}  {{rpad .Name .NamePadding }} {{.Short}}
+{{end}}{{end}}
 {{end}}{{end}}{{end}}{{if .HasExample}}Examples:
 {{.Example}}
-{{end}}{{if .HasAvailableLocalFlags}}Flags:
+{{end}}
+{{if .HasAvailableLocalFlags}}Flags:
 {{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}
 {{end}}{{if .HasAvailableInheritedFlags}}Global Flags:
 {{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}
-{{end}}Use "grove [command] --help" for more information.
-`
+{{end}}{{if .HasAvailableSubCommands}}Use "{{.CommandPath}} [command] --help" for more information about a command.
+{{end}}`
 
 // newNewCommand builds `grove new`.
 func newNewCommand(g *globalOpts) *cobra.Command {
 	var force bool
 	var groveVersion string
 	cmd := &cobra.Command{
-		Use:     "new <project>",
-		Short:   "Create a new Grove application",
+		Use:   "new <project>",
+		Short: "Create a new Grove application",
+		Long: "Create a ready-to-run Grove application with a module, routes\n" +
+			"and docs. The project is created in the current directory.",
 		Example: "  grove new api\n  grove new github.com/acme/api --force",
 		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r := renderer(cmd, g)
-			if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
-				r.Failure("Missing project name", "Usage: grove new <project> [--force]", "")
+			if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+				r.Failure("Missing project name",
+					"Usage: grove new <project>\nExample: grove new my-api",
+					`Run "grove new --help" for details.`)
 				return &exitError{code: 2, err: &UsageError{Msg: "project name required"}}
+			}
+			if len(args) > 1 {
+				r.Failure("Too many arguments",
+					"grove new accepts exactly one project name.",
+					`Run "grove new --help" for usage.`)
+				return &exitError{code: 2, err: &UsageError{Msg: "too many arguments"}}
 			}
 			name := args[0]
 			r.Header(CLIVersion())
@@ -211,9 +349,12 @@ func newNewCommand(g *globalOpts) *cobra.Command {
 			r.Section("Next steps:", []string{
 				r.Command("cd " + displayPath(cwd, base)),
 				r.Command("go mod tidy"),
-				r.Command("go run ."),
+				r.Command("grove dev"),
 				"",
 				"→ " + r.URL("http://localhost:3000"),
+				"",
+				r.Command("grove g module users"),
+				r.Command("grove routes"),
 			})
 			return nil
 		},
@@ -230,23 +371,40 @@ func newGenerateCommand(g *globalOpts) *cobra.Command {
 		Use:     "generate",
 		Aliases: []string{"g"},
 		Short:   "Generate a Grove component",
+		Long: "Generate modules, controllers, services, resources, guards,\n" +
+			"pipes, filters or interceptors from templates.",
 		Example: "  grove generate module users\n  grove g controller users\n  grove g service users\n  grove g resource billing\n  grove g guard jwt\n  grove g pipe lower\n  grove g filter domain\n  grove g interceptor tracing",
-		Args:    cobra.NoArgs,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return unknownCommandError(cmd, args[0])
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},
 	}
 	for _, kind := range []string{"module", "controller", "service", "resource", "guard", "pipe", "filter", "interceptor"} {
 		kind := kind
+		example := generateExampleName(kind)
 		sub := &cobra.Command{
-			Use:   kind + " <name>",
-			Short: fmt.Sprintf("Generate a %s", kind),
-			Args:  cobra.ArbitraryArgs,
+			Use:     kind + " <name>",
+			Short:   fmt.Sprintf("Generate %s %s", article(kind), kind),
+			Example: fmt.Sprintf("  grove g %s %s\n  grove generate %s %s", kind, example, kind, example),
+			Args:    cobra.ArbitraryArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				r := renderer(cmd, g)
-				if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
-					r.Failure("Missing name", fmt.Sprintf("Usage: grove generate %s <name>", kind), "")
+				if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+					r.Failure("Missing name",
+						fmt.Sprintf("Usage: grove g %s <name>\nExample: grove g %s %s", kind, kind, example),
+						fmt.Sprintf(`Run "grove g %s --help" for details.`, kind))
 					return &exitError{code: 2, err: &UsageError{Msg: "component name required"}}
+				}
+				if len(args) > 1 {
+					r.Failure("Too many arguments",
+						fmt.Sprintf("grove g %s accepts exactly one name.", kind),
+						fmt.Sprintf(`Run "grove g %s --help" for usage.`, kind))
+					return &exitError{code: 2, err: &UsageError{Msg: "too many arguments"}}
 				}
 				return runGenerate(cmd, r, kind, args[0])
 			},
@@ -256,9 +414,33 @@ func newGenerateCommand(g *globalOpts) *cobra.Command {
 	return parent
 }
 
+// article returns the indefinite article for a generator kind.
+func article(kind string) string {
+	if strings.EqualFold(strings.TrimSpace(kind), "interceptor") {
+		return "an"
+	}
+	return "a"
+}
+
+// generateExampleName returns a realistic sample name for help text.
+func generateExampleName(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "guard":
+		return "jwt"
+	case "pipe":
+		return "lower"
+	case "filter":
+		return "domain"
+	case "interceptor":
+		return "tracing"
+	default:
+		return "users"
+	}
+}
+
 // runGenerate executes one generator and renders its FileChanges.
 func runGenerate(cmd *cobra.Command, r *ui.Renderer, kind, name string) error {
-	r.Header("")
+	r.Header(CLIVersion())
 	r.Verbosef("command=generate kind=%s name=%q", kind, name)
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -287,7 +469,7 @@ func newVersionCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print the Grove CLI version",
-		Args:  cobra.NoArgs,
+		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()
 			fmt.Fprintln(out, "◆ Grove")
