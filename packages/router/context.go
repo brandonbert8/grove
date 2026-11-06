@@ -1,10 +1,13 @@
 package router
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
+	"time"
 
 	chi "github.com/go-chi/chi/v5"
 )
@@ -102,6 +105,11 @@ type Context interface {
 }
 
 // httpContext is the default Context implementation.
+//
+// When ServeHTTP has global middleware it also installs this value as the
+// request's context.Context, carrying Chi's route context. That reuses an
+// allocation the request needs anyway (instead of context.WithValue) and
+// makes RoutePattern lookup a type assertion.
 type httpContext struct {
 	w http.ResponseWriter
 	r *http.Request
@@ -109,11 +117,53 @@ type httpContext struct {
 	// Status(201).JSON(201, v) emits exactly one WriteHeader.
 	status    int
 	statusSet bool
+	// parent and rctx are set only when installed on a request by ServeHTTP.
+	parent context.Context
+	rctx   *chi.Context
+	// query caches the parsed query string for repeated lookups.
+	query    url.Values
+	queryURL *url.URL
 }
 
 // NewContext wraps w and r in a Context.
 func NewContext(w http.ResponseWriter, r *http.Request) Context {
 	return &httpContext{w: w, r: r}
+}
+
+// Deadline implements context.Context by delegating to the request's
+// parent context.
+func (c *httpContext) Deadline() (time.Time, bool) {
+	if c.parent == nil {
+		return time.Time{}, false
+	}
+	return c.parent.Deadline()
+}
+
+// Done implements context.Context.
+func (c *httpContext) Done() <-chan struct{} {
+	if c.parent == nil {
+		return nil
+	}
+	return c.parent.Done()
+}
+
+// Err implements context.Context.
+func (c *httpContext) Err() error {
+	if c.parent == nil {
+		return nil
+	}
+	return c.parent.Err()
+}
+
+// Value implements context.Context. Chi reads RouteCtxKey from it.
+func (c *httpContext) Value(key any) any {
+	if key == chi.RouteCtxKey {
+		return c.rctx
+	}
+	if c.parent == nil {
+		return nil
+	}
+	return c.parent.Value(key)
 }
 
 // Request returns the incoming HTTP request.
@@ -124,6 +174,8 @@ func (c *httpContext) Request() *http.Request { return c.r }
 func (c *httpContext) SetRequest(r *http.Request) {
 	if r != nil {
 		c.r = r
+		c.query = nil
+		c.queryURL = nil
 	}
 }
 
@@ -149,6 +201,9 @@ func RoutePattern(c Context) string {
 	if c == nil || c.Request() == nil {
 		return ""
 	}
+	if hc, ok := c.Request().Context().(*httpContext); ok && hc.rctx != nil {
+		return hc.rctx.RoutePattern()
+	}
 	rc := chi.RouteContext(c.Request().Context())
 	if rc == nil {
 		return ""
@@ -156,17 +211,30 @@ func RoutePattern(c Context) string {
 	return rc.RoutePattern()
 }
 
+// queryValues parses the query once and reuses it for subsequent lookups.
+func (c *httpContext) queryValues() url.Values {
+	if c.query == nil || c.queryURL != c.r.URL {
+		c.query = c.r.URL.Query()
+		c.queryURL = c.r.URL
+	}
+	return c.query
+}
+
 // Query returns the first value of query parameter name.
-func (c *httpContext) Query(name string) string { return c.r.URL.Query().Get(name) }
+func (c *httpContext) Query(name string) string { return c.queryValues().Get(name) }
 
 // QueryOr returns the query value or fallback when absent.
 // Presence is exact: ?q= is present-but-empty (returns ""), only a
 // missing key falls back — so empty searches don't silently become defaults.
 func (c *httpContext) QueryOr(name, fallback string) string {
-	if !c.r.URL.Query().Has(name) {
+	v, ok := c.queryValues()[name]
+	if !ok {
 		return fallback
 	}
-	return c.r.URL.Query().Get(name)
+	if len(v) == 0 {
+		return ""
+	}
+	return v[0]
 }
 
 // Header returns the first value of request header name.

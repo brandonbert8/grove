@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -106,6 +107,47 @@ func TestUseAfterServeInvalidatesChain(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("middleware added after the first request did not run")
+	}
+}
+
+func TestRoutePatternAndContextValues(t *testing.T) {
+	type ctxKey struct{}
+	for _, withMiddleware := range []bool{false, true} {
+		name := "no-middleware"
+		if withMiddleware {
+			name = "global-middleware"
+		}
+		t.Run(name, func(t *testing.T) {
+			r := New()
+			var pattern string
+			if withMiddleware {
+				r.Use(func(next HandlerFunc) HandlerFunc {
+					return func(c Context) error {
+						err := next(c)
+						pattern = RoutePattern(c)
+						return err
+					}
+				})
+			}
+			var gotValue any
+			r.GET("/users/{id}", func(c Context) error {
+				gotValue = c.Request().Context().Value(ctxKey{})
+				if !withMiddleware {
+					pattern = RoutePattern(c)
+				}
+				return c.NoContent(http.StatusNoContent)
+			})
+			req := httptest.NewRequest(http.MethodGet, "/users/42", nil)
+			req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, "kept"))
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+			if pattern != "/users/{id}" {
+				t.Fatalf("RoutePattern = %q, want /users/{id}", pattern)
+			}
+			if gotValue != "kept" {
+				t.Fatalf("request context value = %v, want kept", gotValue)
+			}
+		})
 	}
 }
 

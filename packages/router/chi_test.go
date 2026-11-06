@@ -46,17 +46,22 @@ func TestChiQueryParams(t *testing.T) {
 	r := New()
 	r.GET("/search", func(c Context) error {
 		return c.JSON(200, map[string]string{
-			"q":    c.Query("q"),
-			"page": c.QueryOr("page", "1"),
+			"q":       c.Query("q"),
+			"page":    c.QueryOr("page", "1"),
+			"empty":   c.QueryOr("empty", "fallback"),
+			"missing": c.QueryOr("missing", "fallback"),
 		})
 	})
-	rec := doRequest(t, r, "GET", "/search?q=grove")
+	rec := doRequest(t, r, "GET", "/search?q=grove&empty=")
 	var body map[string]string
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
 	if body["q"] != "grove" || body["page"] != "1" {
 		t.Fatalf("query = %v, want q=grove page=1", body)
+	}
+	if body["empty"] != "" || body["missing"] != "fallback" {
+		t.Fatalf("QueryOr presence = %v, want empty=\"\" missing=fallback", body)
 	}
 }
 

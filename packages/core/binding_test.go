@@ -74,3 +74,59 @@ func TestControllersHelper(t *testing.T) {
 		t.Fatalf("defs = %+v", defs)
 	}
 }
+
+func TestBuildHelpers(t *testing.T) {
+	type First struct{}
+	type Second struct{}
+	type Ctrl struct {
+		first  *First
+		second *Second
+	}
+	app := New()
+	app.Container.Replace(di.KeyFor[First](), &First{})
+	app.Container.Replace(di.KeyFor[Second](), &Second{})
+	m := &ModuleContext{App: app, Module: &ModuleDef{Name: "test"}}
+
+	build := Build2(
+		func(first *First, second *Second) *Ctrl {
+			return &Ctrl{first: first, second: second}
+		},
+		func(ctrl *Ctrl) ControllerDef {
+			return ControllerDef{
+				Prefix: "/x",
+				Endpoints: []Endpoint{
+					GET("", func(ctx router.Context) error {
+						if ctrl.first == nil || ctrl.second == nil {
+							t.Fatal("controller dependencies were not wired")
+						}
+						return ctx.NoContent(200)
+					}),
+				},
+			}
+		},
+	)
+	if err := build(m); err != nil {
+		t.Fatal(err)
+	}
+	if got := app.moduleControllers["test"]; len(got) != 1 || got[0].Prefix != "/x" {
+		t.Fatalf("mounted controllers = %+v", got)
+	}
+
+	withCtx := BuildWith(
+		func(first *First) *Ctrl { return &Ctrl{first: first} },
+		func(got *ModuleContext, ctrl *Ctrl) (ControllerDef, error) {
+			if got != m {
+				t.Fatal("BuildWith did not pass the module context")
+			}
+			return ControllerDef{Prefix: "/y", Endpoints: []Endpoint{
+				GET("", func(ctx router.Context) error { return ctx.NoContent(200) }),
+			}}, nil
+		},
+	)
+	if err := withCtx(m); err != nil {
+		t.Fatal(err)
+	}
+	if got := app.moduleControllers["test"]; len(got) != 2 || got[1].Prefix != "/y" {
+		t.Fatalf("mounted controllers = %+v", got)
+	}
+}

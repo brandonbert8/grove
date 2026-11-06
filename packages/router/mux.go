@@ -1,7 +1,6 @@
 package router
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	chi "github.com/go-chi/chi/v5"
 )
@@ -34,8 +34,12 @@ type DefaultRouter struct {
 	routes       []RouteInfo
 	errorHandler func(Context, error)
 	// serveHandler caches global middleware composed around the mux. It is
-	// nil until the first request and invalidated by root.Use.
-	serveHandler HandlerFunc
+	// nil until the first request and invalidated by root.Use. The atomic
+	// load is the per-request fast path (no RWMutex on the hot path).
+	serveHandler atomic.Pointer[HandlerFunc]
+	// globalCount is the number of root middleware entries, so a router
+	// with none can skip outer Context construction entirely.
+	globalCount atomic.Int64
 	// strict panics on duplicate method+path instead of last-wins.
 	strict bool
 }
@@ -207,7 +211,8 @@ func (r *DefaultRouter) Use(mw ...Middleware) {
 	defer root.mu.Unlock()
 	r.middlewares = append(r.middlewares, mw...)
 	if r == root {
-		root.serveHandler = nil
+		root.serveHandler.Store(nil)
+		root.globalCount.Store(int64(len(root.middlewares)))
 	}
 }
 
@@ -401,32 +406,52 @@ func (r *DefaultRouter) Routes() []RouteInfo {
 // matched routes, 404s, 405s, and preflights alike.
 func (r *DefaultRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	root := r.rootRouter()
+	// No global middleware: let Chi own the route context (its ServeHTTP
+	// path is allocation-light) without building an unused outer Context.
+	if root.globalCount.Load() == 0 {
+		root.mux.ServeHTTP(w, req)
+		return
+	}
 	final := root.globalHandler()
 	// Seed a route context before Chi runs so the matched pattern remains
-	// observable from the original request after Chi returns. Chi normally
-	// attaches a fresh context internally, which the outer middleware cannot
-	// see once the request has been cloned.
-	if chi.RouteContext(req.Context()) == nil {
-		rctx := chi.NewRouteContext()
-		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	// observable from the outer middleware after Chi returns. The Context
+	// doubles as the request context, avoiding a context.WithValue
+	// allocation; the route context itself comes from a pool.
+	var rctx *chi.Context
+	pooled := false
+	if rctx = chi.RouteContext(req.Context()); rctx == nil {
+		rctx = routeContextPool.Get().(*chi.Context)
+		rctx.Reset()
+		pooled = true
 	}
-	ctx := NewContext(w, req)
+	if pooled {
+		defer func() {
+			rctx.Reset()
+			routeContextPool.Put(rctx)
+		}()
+	}
+	ctx := &httpContext{w: w, r: req, parent: req.Context(), rctx: rctx}
+	req = req.WithContext(ctx)
+	ctx.r = req
 	if err := final(ctx); err != nil {
 		r.dispatchError(ctx, err)
 	}
 }
+
+// routeContextPool recycles Chi route contexts for the global-middleware
+// path. Chi cannot pool them itself because a seeded context is treated
+// as caller-owned.
+var routeContextPool = sync.Pool{New: func() any { return chi.NewRouteContext() }}
 
 // globalHandler returns the cached global middleware chain, building it
 // outside the lock so middleware constructors can safely touch the router.
 // A concurrent Use bumps the middleware count, which discards the build.
 func (r *DefaultRouter) globalHandler() HandlerFunc {
 	for {
-		r.mu.RLock()
-		final := r.serveHandler
-		if final != nil {
-			r.mu.RUnlock()
-			return final
+		if hp := r.serveHandler.Load(); hp != nil {
+			return *hp
 		}
+		r.mu.RLock()
 		global := append([]Middleware(nil), r.middlewares...)
 		count := len(r.middlewares)
 		r.mu.RUnlock()
@@ -437,13 +462,13 @@ func (r *DefaultRouter) globalHandler() HandlerFunc {
 		}, global)
 
 		r.mu.Lock()
-		if r.serveHandler == nil && len(r.middlewares) == count {
-			r.serveHandler = built
+		if r.serveHandler.Load() == nil && len(r.middlewares) == count {
+			r.serveHandler.Store(&built)
 		}
-		final = r.serveHandler
+		hp := r.serveHandler.Load()
 		r.mu.Unlock()
-		if final != nil {
-			return final
+		if hp != nil {
+			return *hp
 		}
 	}
 }

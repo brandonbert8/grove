@@ -23,3 +23,29 @@ func TestValidateSkipDash(t *testing.T) {
 		t.Fatalf("expected no errors for validate:\"-\", got %v", errs)
 	}
 }
+
+// TestValidateJSONNamesAndAllow covers the cached field metadata: JSON
+// names are used in paths, json:"-" is skipped entirely, and the binder
+// allow-list filters top-level fields by JSON name.
+func TestValidateJSONNamesAndAllow(t *testing.T) {
+	type S struct {
+		Name     string `json:"name" validate:"required"`
+		Internal string `json:"-" validate:"required"`
+		Secret   string `json:"secret" validate:"required"`
+	}
+
+	errs := ValidateStrictFields(&S{}, "name")
+	if len(errs) != 1 || errs[0].Field != "name" || errs[0].Tag != "required" {
+		t.Fatalf("expected only name required, got %v", errs)
+	}
+
+	errs = ValidateStrict(&S{Name: "ok", Secret: "ok"})
+	if len(errs) != 0 {
+		t.Fatalf("expected json:\"-\" field to be skipped, got %v", errs)
+	}
+
+	errs = ValidateStrict(&S{Name: "ok"})
+	if len(errs) != 1 || errs[0].Field != "secret" {
+		t.Fatalf("expected only secret required, got %v", errs)
+	}
+}

@@ -11,7 +11,7 @@ import (
 // {"status":"ok"} — the Terminus-style health check, Grove edition.
 // An empty path defaults to "/healthz". Register it like any module:
 //
-//	app.MustRegister(grove.HealthModule(""))
+//	app.MustRegister(grove.HealthModule("").AsModule())
 func HealthModule(path string) *ModuleDef {
 	if path == "" {
 		path = "/healthz"
@@ -50,7 +50,7 @@ const defaultCheckTimeout = 5 * time.Second
 //
 //	app.MustRegister(grove.HealthModuleWithChecks("", 0, map[string]grove.Check{
 //	    "db": pool.PingContext,
-//	}))
+//	}).AsModule())
 //
 // An empty path defaults to "/healthz"; a non-positive timeout means
 // the 5s default. Indicator failures report "fail" (never raw error

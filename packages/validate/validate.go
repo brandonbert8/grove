@@ -124,8 +124,8 @@ type fieldMeta struct {
 const maxCachedStructTypes = 1024
 
 var (
-	structFieldCache  sync.Map // map[reflect.Type][]fieldMeta
-	structFieldCount  atomic.Int64
+	structFieldCache sync.Map // map[reflect.Type][]fieldMeta
+	structFieldCount atomic.Int64
 )
 
 func fieldsFor(rt reflect.Type) []fieldMeta {
